@@ -284,13 +284,29 @@ class BmwCarDataApi:
         if not isinstance(data, dict):
             return {}
         telematic_data = data.get("telematicData")
-        if not isinstance(telematic_data, dict):
-            return {}
-        return {
-            key: value
-            for key, value in telematic_data.items()
-            if isinstance(key, str) and isinstance(value, dict)
-        }
+        # BMW API may return telematicData as a dict {path: {value, unit, ...}}
+        # or as a list [{name, value, unit, timestamp}, ...].  Handle both.
+        if isinstance(telematic_data, dict):
+            return {
+                key: value
+                for key, value in telematic_data.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+        if isinstance(telematic_data, list):
+            result: dict[str, dict[str, Any]] = {}
+            for item in telematic_data:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                result[name] = {
+                    "value": item.get("value"),
+                    "unit": item.get("unit"),
+                    "timestamp": item.get("timestamp"),
+                }
+            return result
+        return {}
 
     async def _get_json(
         self,

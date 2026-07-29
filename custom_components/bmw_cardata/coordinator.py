@@ -339,6 +339,19 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         vin,
                         active_container_id,
                     )
+                    if container_telematic:
+                        self.logger.debug(
+                            "BMW CarData: container %s returned %d telematic keys for %s",
+                            active_container_id,
+                            len(container_telematic),
+                            vin,
+                        )
+                    else:
+                        self.logger.debug(
+                            "BMW CarData: container %s returned empty telematic data for %s",
+                            active_container_id,
+                            vin,
+                        )
                 except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
                     if self._is_rate_limited_error(err):
                         rate_limited_on_telematic = True
@@ -379,10 +392,18 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             existing_telematic = telematic_data_by_vin.get(vin, {})
             if not isinstance(existing_telematic, dict):
                 existing_telematic = {}
-            telematic_data_by_vin[vin] = self._merge_telematic_entries(
+            merged_vin = self._merge_telematic_entries(
                 existing_telematic,
                 container_telematic,
             )
+            self.logger.debug(
+                "BMW CarData: merged %d telematic keys for %s (was %d, added %d)",
+                len(merged_vin),
+                vin,
+                len(existing_telematic),
+                len(container_telematic),
+            )
+            telematic_data_by_vin[vin] = merged_vin
 
         self._telematic_cache_by_vin = telematic_data_by_vin
         if rate_limited_on_telematic:
