@@ -122,8 +122,19 @@ class BmwCarDataStreamManager:
             except asyncio.CancelledError:
                 raise
             except Exception as err:
-                self._logger.warning("BMW stream disconnected: %s", err)
                 err_text = str(err).lower()
+                # "Disconnected during message iteration" is a normal broker-side
+                # disconnect (token expiry, server restart, idle timeout).  Treat
+                # it as a soft reconnect: log at DEBUG, use a flat short delay, and
+                # do NOT advance the exponential backoff counter so that persistent
+                # auth failures still ramp up correctly.
+                if "disconnected during message" in err_text:
+                    self._logger.debug(
+                        "BMW stream broker disconnected (will reconnect in 15s): %s", err
+                    )
+                    await asyncio.sleep(15)
+                    continue
+                self._logger.warning("BMW stream disconnected: %s", err)
                 if (
                     "streaming scope missing" in err_text
                     or "authorization failed" in err_text
@@ -202,6 +213,7 @@ class BmwCarDataStreamManager:
                     username=username,
                     password=token_value,
                     tls_context=tls_context,
+                    keepalive=30,
                 ) as client:
                     await client.subscribe(topic)
                     self._logger.debug(
