@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import BmwCarDataApi, BmwCarDataAuthApi
+from .api import BmwCarDataApi, BmwCarDataAuthApi, BmwRemoteServicesApi
 from .const import (
     CONF_VERBOSE_LOGGING,
     DATA_ENTRIES,
@@ -82,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
     auth_api = BmwCarDataAuthApi(session)
     cardata_api = BmwCarDataApi(session)
+    remote_api = BmwRemoteServicesApi(session)
     token_manager = BmwCarDataTokenManager(hass=hass, entry=entry, auth_api=auth_api)
     stream_manager = BmwCarDataStreamManager(
         hass,
@@ -103,6 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
         "token_manager": token_manager,
         "stream_manager": stream_manager,
+        "remote_api": remote_api,
     }
 
     if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_DATA):

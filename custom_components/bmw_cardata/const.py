@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "bmw_cardata"
 DATA_ENTRIES = "entries"
-PLATFORMS = ["sensor", "binary_sensor", "device_tracker"]
+PLATFORMS = ["sensor", "binary_sensor", "device_tracker", "lock", "button"]
 
 OAUTH_BASE_URL = "https://customer.bmwgroup.com"
 DEVICE_CODE_PATH = "/gcdm/oauth/device/code"
@@ -14,6 +14,11 @@ MAPPINGS_PATH = "/customers/vehicles/mappings"
 BASIC_DATA_PATH_TEMPLATE = "/customers/vehicles/{vin}/basicData"
 CONTAINERS_PATH = "/customers/containers"
 TELEMATIC_DATA_PATH_TEMPLATE = "/customers/vehicles/{vin}/telematicData"
+
+# BMW Remote Services (myBMW / CoCoAPI)
+COCO_BASE_URL = "https://cocoapi.bmwgroup.com"
+REMOTE_COMMANDS_PATH_TEMPLATE = "/eadrax-vrccs/v2/presentation/remote-commands/{vin}"
+REMOTE_X_USER_AGENT = "android(v1.7.0);bmw;1.7.0;row"
 
 DEFAULT_SCOPE = "authenticate_user openid cardata:api:read"
 STREAMING_SCOPE = "cardata:streaming:read"
