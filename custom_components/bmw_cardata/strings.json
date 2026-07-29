@@ -14,15 +14,6 @@
         "title": "Authorize Device",
         "description": "1. Open: {verification_uri}\n2. Enter code: {user_code}\n3. Or use direct link: {verification_uri_complete}\n4. Return here and click submit.\n\nCode expires in {expires_in} seconds.",
         "data": {}
-      },
-      "init": {
-        "title": "BMW CarData Options",
-        "description": "Configure optional MQTT streaming mode and diagnostics.",
-        "data": {
-          "use_streaming": "Use MQTT streaming",
-          "stream_topic": "Stream topic",
-          "verbose_logging": "Verbose logging (writes bmw_cardata.log to /config)"
-        }
       }
     },
     "error": {
@@ -39,6 +30,19 @@
     "abort": {
       "already_configured": "This BMW account is already configured.",
       "missing_flow_state": "Flow state was lost. Restart setup."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BMW CarData Options",
+        "description": "Configure optional MQTT streaming mode and diagnostics.",
+        "data": {
+          "use_streaming": "Use MQTT streaming",
+          "stream_topic": "Stream topic",
+          "verbose_logging": "Verbose logging (writes bmw_cardata.log to /config)"
+        }
+      }
     }
   },
   "entity": {
