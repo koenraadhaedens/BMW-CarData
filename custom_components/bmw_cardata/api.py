@@ -232,13 +232,21 @@ class BmwCarDataApi:
         self,
         access_token: str,
         vin: str,
-        container_id: str,
+        container_id: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Fetch telematic data for a VIN and container."""
+        """Fetch telematic data for a VIN, optionally scoped to a container.
+
+        When container_id is omitted the BMW API is queried without the
+        containerId parameter, which typically returns the latest known vehicle
+        state and is used as a fallback when no active container is available.
+        """
+        params: dict[str, Any] = {}
+        if container_id:
+            params["containerId"] = container_id
         data = await self._get_json(
             TELEMATIC_DATA_PATH_TEMPLATE.format(vin=vin),
             access_token,
-            params={"containerId": container_id},
+            params=params if params else None,
         )
         if not isinstance(data, dict):
             return {}

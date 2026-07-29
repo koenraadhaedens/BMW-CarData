@@ -269,20 +269,51 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             basic_data_by_vin[vin] = await self._api.get_basic_data(access_token, vin)
             self._basic_cache_by_vin[vin] = basic_data_by_vin[vin]
-            if not active_container_id:
-                continue
 
-            try:
-                container_telematic = await self._api.get_telematic_data(
-                    access_token,
-                    vin,
-                    active_container_id,
-                )
-            except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
-                if self._is_rate_limited_error(err):
-                    rate_limited_on_telematic = True
-                    break
-                raise
+            container_telematic: dict[str, Any] = {}
+            if active_container_id:
+                try:
+                    container_telematic = await self._api.get_telematic_data(
+                        access_token,
+                        vin,
+                        active_container_id,
+                    )
+                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
+                    if self._is_rate_limited_error(err):
+                        rate_limited_on_telematic = True
+                        break
+                    raise
+
+            # When no container is available or the container returned no data,
+            # try fetching telematic data without a containerId.  BMW's API may
+            # still return the latest known vehicle state this way while the
+            # vehicle is parked/idle and no active container exists.
+            if not container_telematic:
+                try:
+                    container_telematic = await self._api.get_telematic_data(
+                        access_token, vin
+                    )
+                    if container_telematic:
+                        self.logger.debug(
+                            "BMW CarData: containerless telematic fallback for %s returned %d keys",
+                            vin,
+                            len(container_telematic),
+                        )
+                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
+                    if self._is_rate_limited_error(err):
+                        self.logger.warning(
+                            "BMW CarData: containerless telematic fallback rate-limited for %s",
+                            vin,
+                        )
+                    else:
+                        self.logger.debug(
+                            "BMW CarData: containerless telematic fallback failed for %s: %s",
+                            vin,
+                            err,
+                        )
+
+            if not container_telematic:
+                continue
 
             existing_telematic = telematic_data_by_vin.get(vin, {})
             if not isinstance(existing_telematic, dict):

@@ -124,34 +124,21 @@ VEHICLE_SENSORS: tuple[VehicleSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda _mapping, _basic, telematic: _find_text_telematic_value(
             telematic,
+            # Priority order: most-specific hierarchical keys first, then flat API keys,
+            # then connection/connector status as last-resort fallbacks.
             exact_keys=(
-                "vehicle.drivetrain.electricEngine.charging",
                 "vehicle.drivetrain.electricEngine.charging.status",
                 "vehicle.drivetrain.electricEngine.charging.hvStatus",
-                "vehicle.drivetrain.electricEngine.charging.connectorStatus",
                 "chargingStatus",
+                "vehicle.drivetrain.electricEngine.charging",
+                "vehicle.drivetrain.electricEngine.charging.connectorStatus",
+                "chargingConnectionStatus",
             ),
             include_term_groups=(
                 ("electricengine", "charging", "status"),
                 ("electricengine", "charging", "hvstatus"),
                 ("charging", "status"),
-            ),
-            excluded_terms=("connection",),
-        ),
-    ),
-    VehicleSensorDescription(
-        key="charging_connection_status",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda _mapping, _basic, telematic: _find_text_telematic_value(
-            telematic,
-            exact_keys=(
-                "vehicle.drivetrain.electricEngine.charging.connectorStatus",
-                "chargingConnectionStatus",
-            ),
-            include_term_groups=(
-                ("charging", "connection", "status"),
-                ("connector", "status"),
-                ("chargingconnection",),
+                ("charging", "connection"),
             ),
         ),
     ),
@@ -412,26 +399,38 @@ def _find_numeric_telematic_value(
     exact_keys: tuple[str, ...] = (),
     excluded_terms: tuple[str, ...] = (),
 ) -> float | None:
-    """Find numeric telematic value by prioritized key-term groups."""
-    normalized_items: list[tuple[str, str, dict[str, Any]]] = [
-        (key, key.lower(), value)
+    """Find numeric telematic value by prioritized key-term groups.
+
+    exact_keys are checked in listed order (first match wins), giving callers
+    explicit control over priority. Term groups are only consulted when no
+    exact key produces a value.
+    """
+    # Check exact_keys in the order they are listed (highest priority first).
+    for candidate in exact_keys:
+        candidate_l = candidate.lower()
+        if any(excluded in candidate_l for excluded in excluded_terms):
+            continue
+        # Direct lookup first; case-insensitive scan as fallback.
+        entry: dict[str, Any] | None = telematic_data.get(candidate)  # type: ignore[assignment]
+        if entry is None:
+            for key, val in telematic_data.items():
+                if isinstance(key, str) and key.lower() == candidate_l and isinstance(val, dict):
+                    entry = val
+                    break
+        if not isinstance(entry, dict):
+            continue
+        numeric = _to_float(entry.get("value"))
+        if numeric is not None:
+            return numeric
+
+    # Fall back to term-group substring matching.
+    normalized_items: list[tuple[str, dict[str, Any]]] = [
+        (key.lower(), value)
         for key, value in telematic_data.items()
         if isinstance(key, str) and isinstance(value, dict)
     ]
-
-    exact_keys_lower = {candidate.lower() for candidate in exact_keys}
-    if exact_keys_lower:
-        for _original_key, key_l, value in normalized_items:
-            if key_l not in exact_keys_lower:
-                continue
-            if any(excluded in key_l for excluded in excluded_terms):
-                continue
-            numeric = _to_float(value.get("value"))
-            if numeric is not None:
-                return numeric
-
     for terms in include_term_groups:
-        for _original_key, key_l, value in normalized_items:
+        for key_l, value in normalized_items:
             if any(excluded in key_l for excluded in excluded_terms):
                 continue
             if all(term in key_l for term in terms):
@@ -480,24 +479,36 @@ def _find_text_telematic_value(
     include_term_groups: tuple[tuple[str, ...], ...] = (),
     excluded_terms: tuple[str, ...] = (),
 ) -> str | None:
-    """Find text telematic value by exact key or included terms."""
+    """Find text telematic value by exact key or included terms.
+
+    exact_keys are checked in listed order (first match wins), giving callers
+    explicit control over priority. Term groups are only consulted when no
+    exact key produces a value.
+    """
+    # Check exact_keys in the order they are listed (highest priority first).
+    for candidate in exact_keys:
+        candidate_l = candidate.lower()
+        if any(excluded in candidate_l for excluded in excluded_terms):
+            continue
+        # Direct lookup first; case-insensitive scan as fallback.
+        entry: dict[str, Any] | None = telematic_data.get(candidate)  # type: ignore[assignment]
+        if entry is None:
+            for key, val in telematic_data.items():
+                if isinstance(key, str) and key.lower() == candidate_l and isinstance(val, dict):
+                    entry = val
+                    break
+        if not isinstance(entry, dict):
+            continue
+        extracted = _extract_text_value(entry.get("value"))
+        if extracted is not None:
+            return extracted
+
+    # Fall back to term-group substring matching.
     normalized_items: list[tuple[str, dict[str, Any]]] = [
         (key.lower(), value)
         for key, value in telematic_data.items()
         if isinstance(key, str) and isinstance(value, dict)
     ]
-
-    exact_keys_lower = {candidate.lower() for candidate in exact_keys}
-    if exact_keys_lower:
-        for key_l, value in normalized_items:
-            if key_l not in exact_keys_lower:
-                continue
-            if any(excluded in key_l for excluded in excluded_terms):
-                continue
-            extracted = _extract_text_value(value.get("value"))
-            if extracted is not None:
-                return extracted
-
     for terms in include_term_groups:
         for key_l, value in normalized_items:
             if any(excluded in key_l for excluded in excluded_terms):
