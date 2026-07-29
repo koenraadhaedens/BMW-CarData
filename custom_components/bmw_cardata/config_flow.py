@@ -187,7 +187,7 @@ class BmwCarDataConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Return options flow handler."""
-        return BmwCarDataOptionsFlow(config_entry)
+        return BmwCarDataOptionsFlow()
 
     def _oauth_error_to_flow_error(self, error: str) -> str:
         """Map BMW OAuth errors to config flow error keys."""
