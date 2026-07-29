@@ -396,16 +396,40 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return "rate" in error_text or "limit" in error_text or "rate" in description_text
         return "rate" in str(err).lower() and "limit" in str(err).lower()
 
-    @staticmethod
-    def _select_active_container_ids(containers: list[dict[str, Any]]) -> list[str]:
-        """Select all active container ids."""
-        active_container_ids: list[str] = []
+    def _select_active_container_ids(self, containers: list[dict[str, Any]]) -> list[str]:
+        """Select container ids, preferring ACTIVE ones, falling back to any valid container.
+
+        BMW's API only marks containers as ACTIVE when the vehicle has recent activity.
+        When the vehicle is parked/idle the containers may be INACTIVE or COMPLETED.
+        To avoid losing telematic data in that situation we fall back to all containers
+        that have a valid containerId when no ACTIVE containers are found.
+        """
+        _IGNORED_STATES = {"EXPIRED", "DELETED", "REVOKED"}
+
+        active_ids: list[str] = []
+        fallback_ids: list[str] = []
         for container in containers:
             container_id = container.get("containerId")
+            if not isinstance(container_id, str) or not container_id:
+                continue
             state = str(container.get("state", "")).upper()
-            if isinstance(container_id, str) and container_id and state == "ACTIVE":
-                active_container_ids.append(container_id)
-        return active_container_ids
+            if state == "ACTIVE":
+                active_ids.append(container_id)
+            elif state not in _IGNORED_STATES:
+                fallback_ids.append(container_id)
+
+        if active_ids:
+            return active_ids
+
+        if fallback_ids:
+            self.logger.debug(
+                "BMW CarData: no ACTIVE containers found; falling back to %d non-active container(s) "
+                "to fetch telematic data while vehicle is idle",
+                len(fallback_ids),
+            )
+            return fallback_ids
+
+        return []
 
     @staticmethod
     def _merge_telematic_entries(
