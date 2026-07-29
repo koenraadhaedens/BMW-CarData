@@ -204,12 +204,18 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 except (BmwCarDataApiError, BmwCarDataOAuthError, ValueError) as err:
                     # Keep streaming alive and avoid frequent retries on bootstrap failure.
-                    self._next_stream_bootstrap_monotonic = time.monotonic() + 300
+                    # Use a longer backoff for rate-limit responses since BMW's rate limit
+                    # window is typically 15–30 minutes, not just 5 minutes.
                     if self._is_rate_limited_error(err):
+                        backoff = 900
+                        self._next_stream_bootstrap_monotonic = time.monotonic() + backoff
                         self.logger.warning(
-                            "BMW stream startup bootstrap REST call rate limited; retry in 300s while keeping stream data"
+                            "BMW stream startup bootstrap REST call rate limited; "
+                            "retry in %ds while keeping stream data",
+                            backoff,
                         )
                     else:
+                        self._next_stream_bootstrap_monotonic = time.monotonic() + 300
                         self.logger.warning(
                             "BMW stream startup bootstrap REST call failed; retry in 300s while keeping stream data: %s",
                             err,
