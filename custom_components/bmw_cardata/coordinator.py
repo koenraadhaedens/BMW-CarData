@@ -266,9 +266,24 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if isinstance(mappings, list):
             self._mappings_cache = [item for item in mappings if isinstance(item, dict)]
 
-        if not self.use_streaming:
+        # Always fetch containers for the REST path — this includes the
+        # streaming-mode bootstrap (force_rest=True).  Previously this block
+        # was guarded by `not self.use_streaming`, which caused the bootstrap
+        # to skip container lookup entirely and fall back to the containerless
+        # telematic endpoint (rejected by BMW API with 400 Bad Request).
+        if not self.use_streaming or force_rest:
             containers = await self._api.get_containers(access_token)
+            container_states = [c.get("state", "UNKNOWN") for c in containers if isinstance(c, dict)]
+            self.logger.debug(
+                "BMW CarData: got %d containers, states=%s",
+                len(containers),
+                container_states,
+            )
             active_container_ids = self._select_active_container_ids(containers)
+            self.logger.debug(
+                "BMW CarData: %d usable container(s) selected",
+                len(active_container_ids),
+            )
 
             # When no usable container exists, ask BMW's backend to create a
             # fresh one.  A newly created container is populated with the
@@ -292,6 +307,12 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             vin,
                         )
                         active_container_ids.append(new_id)
+                    else:
+                        self.logger.debug(
+                            "BMW CarData: request_fresh_container returned None for %s "
+                            "(API may not support container creation)",
+                            vin,
+                        )
 
             active_container_id = self._select_container_for_this_cycle(active_container_ids)
 
