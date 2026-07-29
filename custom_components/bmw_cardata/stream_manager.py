@@ -274,6 +274,13 @@ class BmwCarDataStreamManager:
             topic,
             updates_summary,
         )
+        # Log the actual key names so we can see which telematic fields arrived.
+        for vin, entries in updates_by_vin.items():
+            self._logger.debug(
+                "BMW stream keys for %s: %s",
+                vin,
+                sorted(entries.keys()),
+            )
 
         async with self._lock:
             for vin, updates in updates_by_vin.items():

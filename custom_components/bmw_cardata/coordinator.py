@@ -102,6 +102,10 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         summary = {vin: len(values) for vin, values in self._telematic_cache_by_vin.items()}
         self.logger.debug("Applying BMW stream snapshot with key counts per VIN: %s", summary)
+        self.logger.debug(
+            "BMW accumulated telematic keys: %s",
+            {vin: sorted(values.keys()) for vin, values in self._telematic_cache_by_vin.items()},
+        )
         self.async_set_updated_data(updated)
 
     async def _async_update_data(self) -> dict[str, Any]:
