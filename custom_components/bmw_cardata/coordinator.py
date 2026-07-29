@@ -23,6 +23,7 @@ from .const import (
     CONF_TELEMATIC_DATA_BY_VIN,
     COORDINATOR_UPDATE_INTERVAL_SECONDS,
     ERROR_EXPIRED_TOKEN,
+    STREAMING_REST_REFRESH_INTERVAL_SECONDS,
 )
 from .stream_manager import BmwCarDataStreamManager
 from .token_manager import BmwCarDataTokenManager
@@ -59,6 +60,7 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # In streaming mode, run a one-time REST bootstrap to warm data cache.
         self._stream_bootstrap_completed = False
         self._next_stream_bootstrap_monotonic = 0.0
+        self._next_stream_rest_refresh_monotonic = 0.0
 
     @property
     def streaming_requested(self) -> bool:
@@ -174,6 +176,9 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
 
                     self._stream_bootstrap_completed = True
+                    self._next_stream_rest_refresh_monotonic = (
+                        time.monotonic() + STREAMING_REST_REFRESH_INTERVAL_SECONDS
+                    )
                     self.logger.debug(
                         "BMW stream startup bootstrap via REST completed; further REST bootstraps disabled"
                     )
@@ -188,6 +193,46 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self.logger.warning(
                             "BMW stream startup bootstrap REST call failed; retry in 300s while keeping stream data: %s",
                             err,
+                        )
+
+            elif self._should_run_stream_rest_refresh():
+                try:
+                    refresh_access_token = await self._token_manager.async_get_access_token()
+                    refresh_payload = await self._async_fetch_snapshot(refresh_access_token, force_rest=True)
+
+                    refresh_mappings = refresh_payload.get(CONF_MAPPINGS, [])
+                    if isinstance(refresh_mappings, list):
+                        self._mappings_cache = [item for item in refresh_mappings if isinstance(item, dict)]
+
+                    refresh_basic = refresh_payload.get(CONF_BASIC_DATA_BY_VIN, {})
+                    if isinstance(refresh_basic, dict):
+                        for vin, basic_data in refresh_basic.items():
+                            if isinstance(vin, str) and isinstance(basic_data, dict):
+                                self._basic_cache_by_vin[vin] = basic_data
+
+                    refresh_telematic = refresh_payload.get(CONF_TELEMATIC_DATA_BY_VIN, {})
+                    if isinstance(refresh_telematic, dict):
+                        telematic_data_by_vin = self._merge_telematic_by_vin(
+                            telematic_data_by_vin,
+                            refresh_telematic,
+                        )
+
+                    self._next_stream_rest_refresh_monotonic = (
+                        time.monotonic() + STREAMING_REST_REFRESH_INTERVAL_SECONDS
+                    )
+                    self.logger.debug(
+                        "BMW stream periodic REST refresh completed; next refresh in %ss",
+                        STREAMING_REST_REFRESH_INTERVAL_SECONDS,
+                    )
+                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
+                    self._next_stream_rest_refresh_monotonic = time.monotonic() + 300
+                    if self._is_rate_limited_error(err):
+                        self.logger.warning(
+                            "BMW stream periodic REST refresh rate limited; retry in 300s"
+                        )
+                    else:
+                        self.logger.warning(
+                            "BMW stream periodic REST refresh failed; retry in 300s: %s", err
                         )
 
             self._telematic_cache_by_vin = telematic_data_by_vin
@@ -266,6 +311,13 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             not self._stream_bootstrap_completed
             and time.monotonic() >= self._next_stream_bootstrap_monotonic
+        )
+
+    def _should_run_stream_rest_refresh(self) -> bool:
+        """Return whether a periodic REST refresh should run in streaming mode."""
+        return (
+            self._stream_bootstrap_completed
+            and time.monotonic() >= self._next_stream_rest_refresh_monotonic
         )
 
     def _build_stream_mappings(self, existing_mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
