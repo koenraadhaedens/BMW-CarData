@@ -124,7 +124,11 @@ class BmwCarDataStreamManager:
             except Exception as err:
                 self._logger.warning("BMW stream disconnected: %s", err)
                 err_text = str(err).lower()
-                if "streaming scope missing" in err_text or "authorization failed" in err_text:
+                if (
+                    "streaming scope missing" in err_text
+                    or "authorization failed" in err_text
+                    or "no valid mqtt auth token" in err_text
+                ):
                     backoff_seconds = 300
                 await asyncio.sleep(backoff_seconds)
                 if backoff_seconds < 300:

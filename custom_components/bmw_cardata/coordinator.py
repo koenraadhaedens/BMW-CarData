@@ -116,7 +116,23 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.streaming_requested and not self.use_streaming:
                 return self._build_payload_from_cache(require_existing=False)
             if self.use_streaming:
-                return await self._async_fetch_snapshot("")
+                snapshot = await self._async_fetch_snapshot("")
+                # If the streaming bootstrap has not yet completed (MQTT down or token
+                # unavailable), the snapshot will have empty mappings and no telematic
+                # data.  Rather than replacing whatever we had with an empty payload,
+                # preserve the last successful coordinator data so sensors keep showing
+                # their previous values instead of reverting to Unknown.
+                if (
+                    not snapshot.get(CONF_MAPPINGS)
+                    and isinstance(self.data, dict)
+                    and self.data.get(CONF_MAPPINGS)
+                ):
+                    self.logger.debug(
+                        "BMW streaming snapshot is empty; serving last known coordinator data "
+                        "until bootstrap or MQTT recovers"
+                    )
+                    return self.data
+                return snapshot
             access_token = await self._token_manager.async_get_access_token()
             return await self._async_fetch_snapshot(access_token)
         except BmwCarDataOAuthError as err:
@@ -182,7 +198,7 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.logger.debug(
                         "BMW stream startup bootstrap via REST completed; further REST bootstraps disabled"
                     )
-                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
+                except (BmwCarDataApiError, BmwCarDataOAuthError, ValueError) as err:
                     # Keep streaming alive and avoid frequent retries on bootstrap failure.
                     self._next_stream_bootstrap_monotonic = time.monotonic() + 300
                     if self._is_rate_limited_error(err):
