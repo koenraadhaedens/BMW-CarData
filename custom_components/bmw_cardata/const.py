@@ -46,6 +46,9 @@ CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED = "stream_startup_bootstrap_completed"
 DEFAULT_USE_STREAMING = False
 DEFAULT_STREAM_HOST = "customer.streaming-cardata.bmwgroup.com"
 DEFAULT_STREAM_PORT = 9000
+DEFAULT_VERBOSE_LOGGING = False
+
+CONF_VERBOSE_LOGGING = "verbose_logging"
 
 SERVICE_REFRESH_DATA = "refresh_data"
 

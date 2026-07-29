@@ -25,9 +25,11 @@ from .const import (
     CONF_STREAM_TOPIC,
     CONF_TOKEN_EXPIRES_AT,
     CONF_USE_STREAMING,
+    CONF_VERBOSE_LOGGING,
     DEFAULT_STREAM_HOST,
     DEFAULT_STREAM_PORT,
     DEFAULT_USE_STREAMING,
+    DEFAULT_VERBOSE_LOGGING,
     DEFAULT_SCOPE,
     DOMAIN,
     ERROR_ACCESS_DENIED,
@@ -222,6 +224,7 @@ class BmwCarDataOptionsFlow(config_entries.OptionsFlow):
                         CONF_STREAM_HOST: DEFAULT_STREAM_HOST,
                         CONF_STREAM_PORT: DEFAULT_STREAM_PORT,
                         CONF_STREAM_TOPIC: stream_topic,
+                        CONF_VERBOSE_LOGGING: bool(user_input.get(CONF_VERBOSE_LOGGING, DEFAULT_VERBOSE_LOGGING)),
                     },
                 )
 
@@ -236,6 +239,10 @@ class BmwCarDataOptionsFlow(config_entries.OptionsFlow):
                     CONF_STREAM_TOPIC,
                     default=current_options.get(CONF_STREAM_TOPIC, ""),
                 ): str,
+                vol.Optional(
+                    CONF_VERBOSE_LOGGING,
+                    default=current_options.get(CONF_VERBOSE_LOGGING, DEFAULT_VERBOSE_LOGGING),
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

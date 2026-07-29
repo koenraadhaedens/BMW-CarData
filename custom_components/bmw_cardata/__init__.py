@@ -4,20 +4,79 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import partial
+import logging
+import logging.handlers
+import os
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import BmwCarDataApi, BmwCarDataAuthApi
-from .const import DATA_ENTRIES, DOMAIN, PLATFORMS, SERVICE_REFRESH_DATA
+from .const import (
+    CONF_VERBOSE_LOGGING,
+    DATA_ENTRIES,
+    DEFAULT_VERBOSE_LOGGING,
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_REFRESH_DATA,
+)
 from .coordinator import BmwCarDataCoordinator
 from .stream_manager import BmwCarDataStreamManager
 from .token_manager import BmwCarDataTokenManager
 
+_INTEGRATION_LOGGER_NAME = "custom_components.bmw_cardata"
+_FILE_HANDLER_MARKER = "_bmw_cardata_verbose_handler"
+
+
+def _apply_verbose_logging(config_dir: str) -> None:
+    """Set integration logger to DEBUG and attach a rotating file handler."""
+    logger = logging.getLogger(_INTEGRATION_LOGGER_NAME)
+    _remove_verbose_logging()  # ensure no duplicate handlers
+    logger.setLevel(logging.DEBUG)
+    log_path = os.path.join(config_dir, "bmw_cardata.log")
+    handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=5 * 1024 * 1024,  # 5 MB per file
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s  %(name)s  %(levelname)-8s  %(message)s")
+    )
+    setattr(handler, _FILE_HANDLER_MARKER, True)
+    logger.addHandler(handler)
+    logger.debug(
+        "BMW CarData verbose logging enabled — writing to %s", log_path
+    )
+
+
+def _remove_verbose_logging() -> None:
+    """Remove the BMW CarData file handler and restore propagated log level."""
+    logger = logging.getLogger(_INTEGRATION_LOGGER_NAME)
+    for handler in list(logger.handlers):
+        if getattr(handler, _FILE_HANDLER_MARKER, False):
+            logger.removeHandler(handler)
+            handler.close()
+    # Reset to NOTSET so HA's own logger configuration controls the effective level.
+    logger.setLevel(logging.NOTSET)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BMW CarData from a config entry."""
+    # Apply or remove verbose logging based on the current option.
+    verbose = bool(
+        entry.options.get(
+            CONF_VERBOSE_LOGGING,
+            entry.data.get(CONF_VERBOSE_LOGGING, DEFAULT_VERBOSE_LOGGING),
+        )
+    )
+    if verbose:
+        _apply_verbose_logging(hass.config.config_dir)
+    else:
+        _remove_verbose_logging()
+
     domain_data = hass.data.setdefault(DOMAIN, {DATA_ENTRIES: {}})
 
     session = async_get_clientsession(hass)
@@ -59,6 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    _remove_verbose_logging()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False

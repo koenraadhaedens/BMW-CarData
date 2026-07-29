@@ -17,10 +17,11 @@
       },
       "init": {
         "title": "BMW CarData Options",
-        "description": "Configure optional MQTT streaming mode.",
+        "description": "Configure optional MQTT streaming mode and diagnostics.",
         "data": {
           "use_streaming": "Use MQTT streaming",
-          "stream_topic": "Stream topic"
+          "stream_topic": "Stream topic",
+          "verbose_logging": "Verbose logging (writes bmw_cardata.log to /config)"
         }
       }
     },
