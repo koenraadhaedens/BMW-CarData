@@ -73,9 +73,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
     if verbose:
-        _apply_verbose_logging(hass.config.config_dir)
+        await hass.async_add_executor_job(_apply_verbose_logging, hass.config.config_dir)
     else:
-        _remove_verbose_logging()
+        await hass.async_add_executor_job(_remove_verbose_logging)
 
     domain_data = hass.data.setdefault(DOMAIN, {DATA_ENTRIES: {}})
 
@@ -118,7 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _remove_verbose_logging()
+    await hass.async_add_executor_job(_remove_verbose_logging)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
