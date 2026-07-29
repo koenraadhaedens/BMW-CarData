@@ -91,9 +91,22 @@ VEHICLE_SENSORS: tuple[VehicleSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda _mapping, _basic, telematic: _find_numeric_telematic_value(
             telematic,
-            (("kombi", "remaining", "electric", "range"),),
-            exact_keys=("vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",),
+            (
+                ("kombi", "remaining", "electric", "range"),
+                ("remaining", "range", "electric"),
+                ("remainingrangeelectric",),
+            ),
+            exact_keys=(
+                "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",
+                "remainingRangeElectric",
+            ),
         ),
+    ),
+    VehicleSensorDescription(
+        key="battery_soc",
+        translation_key="battery_soc",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda _mapping, _basic, telematic: _find_battery_level_value(telematic),
     ),
     VehicleSensorDescription(
         key="battery_max_energy",
@@ -116,10 +129,29 @@ VEHICLE_SENSORS: tuple[VehicleSensorDescription, ...] = (
                 "vehicle.drivetrain.electricEngine.charging.status",
                 "vehicle.drivetrain.electricEngine.charging.hvStatus",
                 "vehicle.drivetrain.electricEngine.charging.connectorStatus",
+                "chargingStatus",
             ),
             include_term_groups=(
                 ("electricengine", "charging", "status"),
                 ("electricengine", "charging", "hvstatus"),
+                ("charging", "status"),
+            ),
+            excluded_terms=("connection",),
+        ),
+    ),
+    VehicleSensorDescription(
+        key="charging_connection_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda _mapping, _basic, telematic: _find_text_telematic_value(
+            telematic,
+            exact_keys=(
+                "vehicle.drivetrain.electricEngine.charging.connectorStatus",
+                "chargingConnectionStatus",
+            ),
+            include_term_groups=(
+                ("charging", "connection", "status"),
+                ("connector", "status"),
+                ("chargingconnection",),
             ),
         ),
     ),
@@ -430,6 +462,7 @@ def _find_battery_level_value(telematic_data: dict[str, dict[str, Any]]) -> floa
             "vehicle.powertrain.electric.battery.chargeLevel",
             "vehicle.powertrain.highVoltageBattery.stateOfCharge",
             "vehicle.powertrain.highVoltageBattery.displayedSoc",
+            "soc",
         ),
         excluded_terms=(
             "12v",
