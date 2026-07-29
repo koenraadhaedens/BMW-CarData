@@ -269,6 +269,30 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self.use_streaming:
             containers = await self._api.get_containers(access_token)
             active_container_ids = self._select_active_container_ids(containers)
+
+            # When no usable container exists, ask BMW's backend to create a
+            # fresh one.  A newly created container is populated with the
+            # vehicle's *current* state immediately, which is the equivalent
+            # of a manual "please send me the latest data" request and solves
+            # the problem of MQTT-only delivering on change events.
+            if not active_container_ids:
+                for mapping in mappings:
+                    vin = mapping.get("vin")
+                    mapping_type = str(mapping.get("mappingType", "")).upper()
+                    if not isinstance(vin, str) or not vin:
+                        continue
+                    if mapping_type and mapping_type != "PRIMARY":
+                        continue
+                    new_id = await self._api.request_fresh_container(access_token, vin)
+                    if new_id:
+                        self.logger.debug(
+                            "BMW CarData: requested fresh container %s for %s; "
+                            "will fetch telematic data from it",
+                            new_id,
+                            vin,
+                        )
+                        active_container_ids.append(new_id)
+
             active_container_id = self._select_container_for_this_cycle(active_container_ids)
 
         basic_data_by_vin: dict[str, dict[str, Any]] = {}

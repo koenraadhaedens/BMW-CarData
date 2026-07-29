@@ -228,6 +228,39 @@ class BmwCarDataApi:
             return [item for item in containers if isinstance(item, dict)]
         return []
 
+    async def request_fresh_container(self, access_token: str, vin: str) -> str | None:
+        """Request a fresh telematic container for a VIN.
+
+        POSTs to the containers endpoint asking BMW's backend to create a new
+        container populated with the vehicle's current state.  This is the
+        equivalent of a "wake-up / current-state" request for the CarData API.
+        Returns the new containerId on success, or None if unsupported.
+        """
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            API_VERSION_HEADER_NAME: API_VERSION,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        body = {"vin": vin}
+        try:
+            from aiohttp import ClientResponseError
+            async with self._session.post(
+                f"{CARDATA_BASE_URL}{CONTAINERS_PATH}",
+                headers=headers,
+                json=body,
+            ) as response:
+                if response.status in (200, 201):
+                    data = await response.json(content_type=None)
+                    if isinstance(data, dict):
+                        container_id = data.get("containerId") or data.get("id")
+                        if isinstance(container_id, str) and container_id:
+                            return container_id
+                # Non-success but not an exception — API may not support creation.
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+
     async def get_telematic_data(
         self,
         access_token: str,
