@@ -359,14 +359,26 @@ class BmwRemoteServicesApi:
     ) -> str | None:
         """POST a remote command to the BMW CoCoAPI.
 
-        Returns the eventId string for status polling, or None if the API
-        does not return one.  Raises BmwCarDataApiError on HTTP errors.
+        BMW's API path format has changed across versions; try multiple
+        patterns automatically so we don't break when BMW updates their API.
+        Returns the eventId on success or None.  Raises BmwCarDataApiError
+        when all candidates fail.
         """
         import uuid as _uuid
 
-        from .const import COCO_BASE_URL, REMOTE_COMMANDS_PATH_TEMPLATE, REMOTE_X_USER_AGENT
+        from .const import COCO_BASE_URL, REMOTE_X_USER_AGENT
 
-        url = f"{COCO_BASE_URL}{REMOTE_COMMANDS_PATH_TEMPLATE.format(vin=vin)}/{command}"
+        # Normalise to both formats; BMW have used both in different API versions.
+        kebab = command.lower().replace("_", "-")
+        upper = command.upper().replace("-", "_")
+
+        candidates = [
+            f"/eadrax-vrccs/v2/presentation/remote-commands/{vin}/{kebab}",
+            f"/eadrax-vrccs/v2/presentation/remote-commands/{vin}/{upper}",
+            f"/eadrax-vrccs/v3/presentation/remote-commands/{vin}/{kebab}",
+            f"/eadrax-vrccs/v3/presentation/remote-commands/{vin}/{upper}",
+        ]
+
         headers = {
             "Authorization": f"Bearer {access_token}",
             "x-user-agent": REMOTE_X_USER_AGENT,
@@ -374,52 +386,70 @@ class BmwRemoteServicesApi:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        try:
-            async with self._session.post(url, headers=headers, json={}) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    error_msg = None
-                    if isinstance(data, dict):
-                        error_msg = (
-                            data.get("error")
-                            or data.get("message")
-                            or data.get("title")
+
+        last_error: BmwCarDataApiError | None = None
+        for path in candidates:
+            url = f"{COCO_BASE_URL}{path}"
+            try:
+                async with self._session.post(url, headers=headers, json={}) as response:
+                    data = await response.json(content_type=None)
+                    if response.status == 404:
+                        last_error = BmwCarDataApiError(
+                            f"Remote command '{command}' not found at {path}"
                         )
-                    raise BmwCarDataApiError(
-                        f"Remote command '{command}' failed ({response.status})"
-                        + (f": {error_msg}" if error_msg else "")
-                    )
-                if isinstance(data, dict):
-                    return data.get("eventId") or data.get("event_id")
-                return None
-        except ClientResponseError as err:
-            raise BmwCarDataApiError(f"Remote command '{command}' HTTP error") from err
+                        continue
+                    if response.status >= 400:
+                        error_msg = None
+                        if isinstance(data, dict):
+                            error_msg = (
+                                data.get("error")
+                                or data.get("message")
+                                or data.get("title")
+                            )
+                        raise BmwCarDataApiError(
+                            f"Remote command '{command}' failed ({response.status})"
+                            + (f": {error_msg}" if error_msg else "")
+                        )
+                    if isinstance(data, dict):
+                        event_id = data.get("eventId") or data.get("event_id")
+                        _LOGGER.debug(
+                            "BMW remote command '%s' succeeded at path %s (eventId=%s)",
+                            command, path, event_id,
+                        )
+                        return event_id
+                    return None
+            except ClientResponseError as err:
+                raise BmwCarDataApiError(f"Remote command '{command}' HTTP error") from err
+
+        raise last_error or BmwCarDataApiError(
+            f"Remote command '{command}' returned 404 on all candidate paths"
+        )
 
     async def lock_doors(self, access_token: str, vin: str) -> str | None:
         """Lock all doors."""
-        return await self.send_command(access_token, vin, "door-lock")
+        return await self.send_command(access_token, vin, "DOOR_LOCK")
 
     async def unlock_doors(self, access_token: str, vin: str) -> str | None:
         """Unlock all doors."""
-        return await self.send_command(access_token, vin, "door-unlock")
+        return await self.send_command(access_token, vin, "DOOR_UNLOCK")
 
     async def start_climate(self, access_token: str, vin: str) -> str | None:
         """Start climate pre-conditioning."""
-        return await self.send_command(access_token, vin, "climate-now")
+        return await self.send_command(access_token, vin, "CLIMATE_NOW")
 
     async def stop_climate(self, access_token: str, vin: str) -> str | None:
         """Stop climate pre-conditioning."""
-        return await self.send_command(access_token, vin, "climate-stop")
+        return await self.send_command(access_token, vin, "CLIMATE_STOP")
 
     async def flash_lights(self, access_token: str, vin: str) -> str | None:
         """Flash exterior lights."""
-        return await self.send_command(access_token, vin, "light-flash")
+        return await self.send_command(access_token, vin, "LIGHT_FLASH")
 
     async def honk_horn(self, access_token: str, vin: str) -> str | None:
         """Sound the horn."""
-        return await self.send_command(access_token, vin, "horn-blow")
+        return await self.send_command(access_token, vin, "HORN_BLOW")
 
     async def find_vehicle(self, access_token: str, vin: str) -> str | None:
         """Activate vehicle finder (flash + horn)."""
-        return await self.send_command(access_token, vin, "vehicle-finder")
+        return await self.send_command(access_token, vin, "VEHICLE_FINDER")
 
