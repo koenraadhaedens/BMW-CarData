@@ -55,3 +55,7 @@ streaming enabled. BMW must issue a new token containing the
 When streaming is enabled, telematics sensors use streamed updates with an hourly REST
 refresh as a fallback. REST-only configurations also refresh hourly to stay within BMW's
 API request limit.
+
+If BMW is already rate limiting during Home Assistant startup, the integration remains
+loaded with empty startup data and retries after its local cooldown. This avoids rapid
+config-entry setup retries that would extend the throttling window.

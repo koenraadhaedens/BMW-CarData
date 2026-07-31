@@ -155,18 +155,18 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self.logger.warning(
                             "BMW CarData API rate limited during retry; reusing cached data"
                         )
-                        return self._build_payload_from_cache(require_existing=True)
+                        return self._build_payload_from_cache(require_existing=False)
                     raise UpdateFailed(str(retry_err)) from retry_err
             if self._is_rate_limited_error(err):
                 self._start_rate_limit_cooldown()
                 self.logger.warning("BMW CarData API rate limited; reusing cached data")
-                return self._build_payload_from_cache(require_existing=True)
+                return self._build_payload_from_cache(require_existing=False)
             raise UpdateFailed(str(err)) from err
         except BmwCarDataApiError as err:
             if self._is_rate_limited_error(err):
                 self._start_rate_limit_cooldown()
                 self.logger.warning("BMW CarData API rate limited; reusing cached data")
-                return self._build_payload_from_cache(require_existing=True)
+                return self._build_payload_from_cache(require_existing=False)
             raise UpdateFailed(str(err)) from err
 
     async def _async_fetch_snapshot(self, access_token: str, *, force_rest: bool = False) -> dict[str, Any]:
