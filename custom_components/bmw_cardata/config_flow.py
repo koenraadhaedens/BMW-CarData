@@ -20,15 +20,9 @@ from .const import (
     CONF_ID_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_SCOPE,
-    CONF_STREAM_HOST,
-    CONF_STREAM_PORT,
     CONF_STREAM_TOPIC,
     CONF_TOKEN_EXPIRES_AT,
-    CONF_USE_STREAMING,
     CONF_VERBOSE_LOGGING,
-    DEFAULT_STREAM_HOST,
-    DEFAULT_STREAM_PORT,
-    DEFAULT_USE_STREAMING,
     DEFAULT_VERBOSE_LOGGING,
     DEFAULT_SCOPE,
     DOMAIN,
@@ -38,7 +32,6 @@ from .const import (
     ERROR_INVALID_CLIENT,
     ERROR_INVALID_REQUEST,
     ERROR_SLOW_DOWN,
-    STREAMING_SCOPE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,8 +39,7 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_CLIENT_ID): str,
-        vol.Optional(CONF_USE_STREAMING, default=DEFAULT_USE_STREAMING): bool,
-        vol.Optional(CONF_STREAM_TOPIC, default=""): str,
+        vol.Required(CONF_STREAM_TOPIC): str,
     }
 )
 
@@ -73,9 +65,8 @@ class BmwCarDataConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             client_id = user_input[CONF_CLIENT_ID].strip()
-            use_streaming = bool(user_input.get(CONF_USE_STREAMING, DEFAULT_USE_STREAMING))
             stream_topic = str(user_input.get(CONF_STREAM_TOPIC, "")).strip()
-            if use_streaming and not stream_topic:
+            if not stream_topic:
                 errors[CONF_STREAM_TOPIC] = "required"
 
             if errors:
@@ -86,21 +77,15 @@ class BmwCarDataConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
             self._stream_options = {
-                CONF_USE_STREAMING: use_streaming,
-                CONF_STREAM_HOST: DEFAULT_STREAM_HOST,
-                CONF_STREAM_PORT: DEFAULT_STREAM_PORT,
                 CONF_STREAM_TOPIC: stream_topic,
             }
             api = BmwCarDataAuthApi(async_get_clientsession(self.hass))
             pkce = api.generate_pkce_pair()
 
             try:
-                requested_scope = DEFAULT_SCOPE
-                if use_streaming and STREAMING_SCOPE not in requested_scope:
-                    requested_scope = f"{requested_scope} {STREAMING_SCOPE}"
                 device_response = await api.request_device_code(
                     client_id=client_id,
-                    scope=requested_scope,
+                    scope=DEFAULT_SCOPE,
                     code_challenge=pkce.code_challenge,
                 )
             except BmwCarDataOAuthError as err:
@@ -211,18 +196,14 @@ class BmwCarDataOptionsFlow(config_entries.OptionsFlow):
         """Manage options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            use_streaming = bool(user_input.get(CONF_USE_STREAMING, False))
             stream_topic = str(user_input.get(CONF_STREAM_TOPIC, "")).strip()
-            if use_streaming and not stream_topic:
+            if not stream_topic:
                 errors[CONF_STREAM_TOPIC] = "required"
 
             if not errors:
                 return self.async_create_entry(
                     title="",
                     data={
-                        CONF_USE_STREAMING: use_streaming,
-                        CONF_STREAM_HOST: DEFAULT_STREAM_HOST,
-                        CONF_STREAM_PORT: DEFAULT_STREAM_PORT,
                         CONF_STREAM_TOPIC: stream_topic,
                         CONF_VERBOSE_LOGGING: bool(user_input.get(CONF_VERBOSE_LOGGING, DEFAULT_VERBOSE_LOGGING)),
                     },
@@ -231,11 +212,7 @@ class BmwCarDataOptionsFlow(config_entries.OptionsFlow):
         current_options = {**self.config_entry.options}
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_USE_STREAMING,
-                    default=current_options.get(CONF_USE_STREAMING, DEFAULT_USE_STREAMING),
-                ): bool,
-                vol.Optional(
+                vol.Required(
                     CONF_STREAM_TOPIC,
                     default=current_options.get(CONF_STREAM_TOPIC, ""),
                 ): str,

@@ -1,601 +1,111 @@
-"""Data coordinator for BMW CarData."""
+"""MQTT data coordinator for BMW CarData."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
-import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .api import BmwCarDataApi, BmwCarDataApiError, BmwCarDataOAuthError
 from .const import (
-    CONF_ACTIVE_CONTAINER_ID,
     CONF_BASIC_DATA_BY_VIN,
     CONF_MAPPINGS,
-    CONF_STREAM_HOST,
-    CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED,
     CONF_STREAM_TOPIC,
-    CONF_USE_STREAMING,
     CONF_TELEMATIC_DATA_BY_VIN,
-    COORDINATOR_UPDATE_INTERVAL_SECONDS,
-    ERROR_EXPIRED_TOKEN,
-    RATE_LIMIT_COOLDOWN_SECONDS,
-    STREAMING_REST_REFRESH_INTERVAL_SECONDS,
 )
 from .stream_manager import BmwCarDataStreamManager
-from .token_manager import BmwCarDataTokenManager
 
 
 class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator to fetch and cache BMW CarData payloads."""
+    """Publish incoming BMW MQTT data to Home Assistant entities."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         *,
         entry: ConfigEntry,
-        api: BmwCarDataApi,
-        token_manager: BmwCarDataTokenManager,
         stream_manager: BmwCarDataStreamManager,
     ) -> None:
-        """Initialize coordinator."""
+        """Initialize the MQTT-only coordinator."""
         super().__init__(
             hass,
             logger=logging.getLogger(__name__),
             name="BMW CarData",
-            update_interval=timedelta(seconds=COORDINATOR_UPDATE_INTERVAL_SECONDS),
+            update_interval=None,
         )
-        self._api = api
         self._entry = entry
-        self._token_manager = token_manager
         self._stream_manager = stream_manager
-        self._container_rotation_index = 0
         self._telematic_cache_by_vin: dict[str, dict[str, dict[str, Any]]] = {}
-        self._mappings_cache: list[dict[str, Any]] = []
-        self._basic_cache_by_vin: dict[str, dict[str, Any]] = {}
-        self._stream_fallback_logged = False
-        # In streaming mode, run a one-time REST bootstrap to warm data cache.
-        self._stream_bootstrap_completed = False
-        self._next_stream_bootstrap_monotonic = 0.0
-        self._next_stream_rest_refresh_monotonic = 0.0
-        self._rate_limit_until_monotonic = 0.0
-
-    @property
-    def streaming_requested(self) -> bool:
-        """Return whether user requested streaming mode and basic settings are present."""
-        enabled = bool(self._entry.options.get(CONF_USE_STREAMING, self._entry.data.get(CONF_USE_STREAMING, False)))
-        host = self._entry.options.get(CONF_STREAM_HOST, self._entry.data.get(CONF_STREAM_HOST))
-        topic = self._entry.options.get(CONF_STREAM_TOPIC, self._entry.data.get(CONF_STREAM_TOPIC))
-        return enabled and isinstance(host, str) and bool(host) and isinstance(topic, str) and bool(topic)
 
     @property
     def use_streaming(self) -> bool:
-        """Return whether streaming can be used right now."""
-        return self.streaming_requested and self._stream_manager.enabled
+        """Return whether MQTT configuration and authorization are complete."""
+        return self._stream_manager.enabled
+
+    async def async_initialize(self) -> None:
+        """Initialize empty state and start the MQTT listener."""
+        self.async_set_updated_data(self._build_payload())
+        await self._stream_manager.async_start()
 
     async def async_apply_stream_snapshot(self) -> None:
-        """Apply latest stream cache to coordinator state and update entities."""
-        if not self.use_streaming:
-            return
+        """Apply the latest incoming MQTT data and update entities."""
         telematic_snapshot = await self._stream_manager.async_get_telematic_snapshot()
         if not telematic_snapshot:
-            self.logger.debug("BMW stream snapshot empty; no telematic updates yet")
             return
 
         self._telematic_cache_by_vin = self._merge_telematic_by_vin(
             self._telematic_cache_by_vin,
             telematic_snapshot,
         )
-
-        base_data = self.data if isinstance(self.data, dict) else {}
-        updated = {
-            CONF_MAPPINGS: self._build_stream_mappings(base_data.get(CONF_MAPPINGS, [])),
-            CONF_BASIC_DATA_BY_VIN: base_data.get(CONF_BASIC_DATA_BY_VIN, {}),
-            CONF_TELEMATIC_DATA_BY_VIN: dict(self._telematic_cache_by_vin),
-            CONF_ACTIVE_CONTAINER_ID: base_data.get(CONF_ACTIVE_CONTAINER_ID),
-            CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED: base_data.get(
-                CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED,
-                self._stream_bootstrap_completed,
-            ),
-        }
-        summary = {vin: len(values) for vin, values in self._telematic_cache_by_vin.items()}
-        self.logger.debug("Applying BMW stream snapshot with key counts per VIN: %s", summary)
         self.logger.debug(
-            "BMW accumulated telematic keys: %s",
-            {vin: sorted(values.keys()) for vin, values in self._telematic_cache_by_vin.items()},
+            "Applying BMW MQTT snapshot with key counts per VIN: %s",
+            {
+                vin: len(values)
+                for vin, values in self._telematic_cache_by_vin.items()
+            },
         )
-        self.async_set_updated_data(updated)
+        self.async_set_updated_data(self._build_payload())
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from API."""
-        try:
-            if self.streaming_requested and not self.use_streaming and not self._stream_fallback_logged:
-                self.logger.warning(
-                    "BMW streaming requested but not available (missing scope or stream credentials); "
-                    "REST polling is skipped in streaming-only mode until streaming auth is valid."
-                )
-                self._stream_fallback_logged = True
-            if self.streaming_requested and not self.use_streaming:
-                return self._build_payload_from_cache(require_existing=False)
-            if self.use_streaming:
-                snapshot = await self._async_fetch_snapshot("")
-                # If the streaming bootstrap has not yet completed (MQTT down or token
-                # unavailable), the snapshot will have empty mappings and no telematic
-                # data.  Rather than replacing whatever we had with an empty payload,
-                # preserve the last successful coordinator data so sensors keep showing
-                # their previous values instead of reverting to Unknown.
-                if (
-                    not snapshot.get(CONF_MAPPINGS)
-                    and isinstance(self.data, dict)
-                    and self.data.get(CONF_MAPPINGS)
-                ):
-                    self.logger.debug(
-                        "BMW streaming snapshot is empty; serving last known coordinator data "
-                        "until bootstrap or MQTT recovers"
-                    )
-                    return self.data
-                return snapshot
-            if time.monotonic() < self._rate_limit_until_monotonic:
-                self.logger.debug("BMW CarData API cooldown active; reusing cached data")
-                return self._build_payload_from_cache(require_existing=True)
-            access_token = await self._token_manager.async_get_access_token()
-            return await self._async_fetch_snapshot(access_token)
-        except BmwCarDataOAuthError as err:
-            if err.error == ERROR_EXPIRED_TOKEN:
-                try:
-                    access_token = await self._token_manager.async_get_access_token()
-                    return await self._async_fetch_snapshot(access_token)
-                except (BmwCarDataApiError, BmwCarDataOAuthError) as retry_err:
-                    if self._is_rate_limited_error(retry_err):
-                        self._start_rate_limit_cooldown()
-                        self.logger.warning(
-                            "BMW CarData API rate limited during retry; reusing cached data"
-                        )
-                        return self._build_payload_from_cache(require_existing=False)
-                    raise UpdateFailed(str(retry_err)) from retry_err
-            if self._is_rate_limited_error(err):
-                self._start_rate_limit_cooldown()
-                self.logger.warning("BMW CarData API rate limited; reusing cached data")
-                return self._build_payload_from_cache(require_existing=False)
-            raise UpdateFailed(str(err)) from err
-        except BmwCarDataApiError as err:
-            if self._is_rate_limited_error(err):
-                self._start_rate_limit_cooldown()
-                self.logger.warning("BMW CarData API rate limited; reusing cached data")
-                return self._build_payload_from_cache(require_existing=False)
-            raise UpdateFailed(str(err)) from err
-
-    async def _async_fetch_snapshot(self, access_token: str, *, force_rest: bool = False) -> dict[str, Any]:
-        """Fetch one update snapshot with bounded API pressure."""
-        active_container_id: str | None = None
-        if self.use_streaming and not force_rest:
-            await self._stream_manager.async_start()
-            telematic_data_by_vin = await self._stream_manager.async_get_telematic_snapshot()
-            telematic_data_by_vin = self._merge_telematic_by_vin(
-                self._telematic_cache_by_vin,
-                telematic_data_by_vin,
-            )
-
-            if self._should_run_stream_bootstrap():
-                try:
-                    bootstrap_access_token = await self._token_manager.async_get_access_token()
-                    bootstrap_payload = await self._async_fetch_snapshot(
-                        bootstrap_access_token,
-                        force_rest=True,
-                    )
-
-                    bootstrap_mappings = bootstrap_payload.get(CONF_MAPPINGS, [])
-                    if isinstance(bootstrap_mappings, list):
-                        self._mappings_cache = [item for item in bootstrap_mappings if isinstance(item, dict)]
-
-                    bootstrap_basic = bootstrap_payload.get(CONF_BASIC_DATA_BY_VIN, {})
-                    if isinstance(bootstrap_basic, dict):
-                        for vin, basic_data in bootstrap_basic.items():
-                            if isinstance(vin, str) and isinstance(basic_data, dict):
-                                self._basic_cache_by_vin[vin] = basic_data
-
-                    bootstrap_telematic = bootstrap_payload.get(CONF_TELEMATIC_DATA_BY_VIN, {})
-                    if isinstance(bootstrap_telematic, dict):
-                        telematic_data_by_vin = self._merge_telematic_by_vin(
-                            telematic_data_by_vin,
-                            bootstrap_telematic,
-                        )
-
-                    self._stream_bootstrap_completed = True
-                    self._next_stream_rest_refresh_monotonic = (
-                        time.monotonic() + STREAMING_REST_REFRESH_INTERVAL_SECONDS
-                    )
-                    self.logger.debug(
-                        "BMW stream startup bootstrap via REST completed; further REST bootstraps disabled"
-                    )
-                except (BmwCarDataApiError, BmwCarDataOAuthError, ValueError) as err:
-                    # Keep streaming alive and avoid frequent retries on bootstrap failure.
-                    # Use a longer backoff for rate-limit responses since BMW's rate limit
-                    # window is typically 15–30 minutes, not just 5 minutes.
-                    if self._is_rate_limited_error(err):
-                        backoff = 900
-                        self._next_stream_bootstrap_monotonic = time.monotonic() + backoff
-                        self.logger.warning(
-                            "BMW stream startup bootstrap REST call rate limited; "
-                            "retry in %ds while keeping stream data",
-                            backoff,
-                        )
-                    else:
-                        self._next_stream_bootstrap_monotonic = time.monotonic() + 300
-                        self.logger.warning(
-                            "BMW stream startup bootstrap REST call failed; retry in 300s while keeping stream data: %s",
-                            err,
-                        )
-
-            elif self._should_run_stream_rest_refresh():
-                try:
-                    refresh_access_token = await self._token_manager.async_get_access_token()
-                    refresh_payload = await self._async_fetch_snapshot(refresh_access_token, force_rest=True)
-
-                    refresh_mappings = refresh_payload.get(CONF_MAPPINGS, [])
-                    if isinstance(refresh_mappings, list):
-                        self._mappings_cache = [item for item in refresh_mappings if isinstance(item, dict)]
-
-                    refresh_basic = refresh_payload.get(CONF_BASIC_DATA_BY_VIN, {})
-                    if isinstance(refresh_basic, dict):
-                        for vin, basic_data in refresh_basic.items():
-                            if isinstance(vin, str) and isinstance(basic_data, dict):
-                                self._basic_cache_by_vin[vin] = basic_data
-
-                    refresh_telematic = refresh_payload.get(CONF_TELEMATIC_DATA_BY_VIN, {})
-                    if isinstance(refresh_telematic, dict):
-                        telematic_data_by_vin = self._merge_telematic_by_vin(
-                            telematic_data_by_vin,
-                            refresh_telematic,
-                        )
-
-                    self._next_stream_rest_refresh_monotonic = (
-                        time.monotonic() + STREAMING_REST_REFRESH_INTERVAL_SECONDS
-                    )
-                    self.logger.debug(
-                        "BMW stream periodic REST refresh completed; next refresh in %ss",
-                        STREAMING_REST_REFRESH_INTERVAL_SECONDS,
-                    )
-                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
-                    self._next_stream_rest_refresh_monotonic = time.monotonic() + 300
-                    if self._is_rate_limited_error(err):
-                        self.logger.warning(
-                            "BMW stream periodic REST refresh rate limited; retry in 300s"
-                        )
-                    else:
-                        self.logger.warning(
-                            "BMW stream periodic REST refresh failed; retry in 300s: %s", err
-                        )
-
-            self._telematic_cache_by_vin = telematic_data_by_vin
-            mappings = self._build_stream_mappings(self._mappings_cache)
-            basic_data_by_vin = dict(self._basic_cache_by_vin)
-            return {
-                CONF_MAPPINGS: mappings,
-                CONF_BASIC_DATA_BY_VIN: basic_data_by_vin,
-                CONF_TELEMATIC_DATA_BY_VIN: telematic_data_by_vin,
-                CONF_ACTIVE_CONTAINER_ID: None,
-                CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED: self._stream_bootstrap_completed,
-            }
-
-        mappings = await self._api.get_mappings(access_token)
-        if isinstance(mappings, list):
-            self._mappings_cache = [item for item in mappings if isinstance(item, dict)]
-
-        # Always fetch containers for the REST path — this includes the
-        # streaming-mode bootstrap (force_rest=True).  Previously this block
-        # was guarded by `not self.use_streaming`, which caused the bootstrap
-        # to skip container lookup entirely and fall back to the containerless
-        # telematic endpoint (rejected by BMW API with 400 Bad Request).
-        if not self.use_streaming or force_rest:
-            containers = await self._api.get_containers(access_token)
-            container_states = [c.get("state", "UNKNOWN") for c in containers if isinstance(c, dict)]
-            self.logger.debug(
-                "BMW CarData: got %d containers, states=%s",
-                len(containers),
-                container_states,
-            )
-            active_container_ids = self._select_active_container_ids(containers)
-            self.logger.debug(
-                "BMW CarData: %d usable container(s) selected",
-                len(active_container_ids),
-            )
-
-            # When no usable container exists, ask BMW's backend to create a
-            # fresh one.  A newly created container is populated with the
-            # vehicle's *current* state immediately, which is the equivalent
-            # of a manual "please send me the latest data" request and solves
-            # the problem of MQTT-only delivering on change events.
-            if not active_container_ids:
-                for mapping in mappings:
-                    vin = mapping.get("vin")
-                    mapping_type = str(mapping.get("mappingType", "")).upper()
-                    if not isinstance(vin, str) or not vin:
-                        continue
-                    if mapping_type and mapping_type != "PRIMARY":
-                        continue
-                    new_id = await self._api.request_fresh_container(access_token, vin)
-                    if new_id:
-                        self.logger.debug(
-                            "BMW CarData: requested fresh container %s for %s; "
-                            "will fetch telematic data from it",
-                            new_id,
-                            vin,
-                        )
-                        active_container_ids.append(new_id)
-                    else:
-                        self.logger.debug(
-                            "BMW CarData: request_fresh_container returned None for %s "
-                            "(API may not support container creation)",
-                            vin,
-                        )
-
-            active_container_id = self._select_container_for_this_cycle(active_container_ids)
-
-        basic_data_by_vin: dict[str, dict[str, Any]] = {}
-        telematic_data_by_vin = dict(self._telematic_cache_by_vin)
-
-        rate_limited_on_telematic = False
-        for mapping in mappings:
-            vin = mapping.get("vin")
-            mapping_type = str(mapping.get("mappingType", "")).upper()
-            if not isinstance(vin, str) or not vin:
-                continue
-            if mapping_type and mapping_type != "PRIMARY":
-                continue
-
-            basic_data_by_vin[vin] = await self._api.get_basic_data(access_token, vin)
-            self._basic_cache_by_vin[vin] = basic_data_by_vin[vin]
-
-            container_telematic: dict[str, Any] = {}
-            if active_container_id:
-                try:
-                    container_telematic = await self._api.get_telematic_data(
-                        access_token,
-                        vin,
-                        active_container_id,
-                    )
-                    if container_telematic:
-                        self.logger.debug(
-                            "BMW CarData: container %s returned %d telematic keys for %s",
-                            active_container_id,
-                            len(container_telematic),
-                            vin,
-                        )
-                    else:
-                        self.logger.debug(
-                            "BMW CarData: container %s returned empty telematic data for %s",
-                            active_container_id,
-                            vin,
-                        )
-                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
-                    if self._is_rate_limited_error(err):
-                        rate_limited_on_telematic = True
-                        break
-                    raise
-
-            # When no container is available or the container returned no data,
-            # try fetching telematic data without a containerId.  BMW's API may
-            # still return the latest known vehicle state this way while the
-            # vehicle is parked/idle and no active container exists.
-            if not container_telematic:
-                try:
-                    container_telematic = await self._api.get_telematic_data(
-                        access_token, vin
-                    )
-                    if container_telematic:
-                        self.logger.debug(
-                            "BMW CarData: containerless telematic fallback for %s returned %d keys",
-                            vin,
-                            len(container_telematic),
-                        )
-                except (BmwCarDataApiError, BmwCarDataOAuthError) as err:
-                    if self._is_rate_limited_error(err):
-                        self.logger.warning(
-                            "BMW CarData: containerless telematic fallback rate-limited for %s",
-                            vin,
-                        )
-                    else:
-                        self.logger.debug(
-                            "BMW CarData: containerless telematic fallback failed for %s: %s",
-                            vin,
-                            err,
-                        )
-
-            if not container_telematic:
-                continue
-
-            existing_telematic = telematic_data_by_vin.get(vin, {})
-            if not isinstance(existing_telematic, dict):
-                existing_telematic = {}
-            merged_vin = self._merge_telematic_entries(
-                existing_telematic,
-                container_telematic,
-            )
-            self.logger.debug(
-                "BMW CarData: merged %d telematic keys for %s (was %d, added %d)",
-                len(merged_vin),
-                vin,
-                len(existing_telematic),
-                len(container_telematic),
-            )
-            telematic_data_by_vin[vin] = merged_vin
-
-        self._telematic_cache_by_vin = telematic_data_by_vin
-        if rate_limited_on_telematic:
-            self._start_rate_limit_cooldown()
-            self.logger.warning(
-                "BMW CarData API rate limited during telematic fetch; keeping cached telematics"
-            )
-
+    def _build_payload(self) -> dict[str, Any]:
+        """Build coordinator data exclusively from MQTT state and topic metadata."""
         return {
-            CONF_MAPPINGS: mappings,
-            CONF_BASIC_DATA_BY_VIN: basic_data_by_vin,
-            CONF_TELEMATIC_DATA_BY_VIN: telematic_data_by_vin,
-            CONF_ACTIVE_CONTAINER_ID: active_container_id,
-            CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED: self._stream_bootstrap_completed,
+            CONF_MAPPINGS: self._build_stream_mappings(),
+            CONF_BASIC_DATA_BY_VIN: {},
+            CONF_TELEMATIC_DATA_BY_VIN: dict(self._telematic_cache_by_vin),
         }
 
-    def _start_rate_limit_cooldown(self) -> None:
-        """Delay further REST calls after BMW reports throttling."""
-        self._rate_limit_until_monotonic = (
-            time.monotonic() + RATE_LIMIT_COOLDOWN_SECONDS
+    def _build_stream_mappings(self) -> list[dict[str, str]]:
+        """Build vehicle mappings from the configured topic and received VINs."""
+        vins = set(self._telematic_cache_by_vin)
+        stream_topic = self._entry.options.get(
+            CONF_STREAM_TOPIC,
+            self._entry.data.get(CONF_STREAM_TOPIC, ""),
         )
-
-    def _should_run_stream_bootstrap(self) -> bool:
-        """Return whether startup REST bootstrap should run in streaming mode."""
-        return (
-            not self._stream_bootstrap_completed
-            and time.monotonic() >= self._next_stream_bootstrap_monotonic
-        )
-
-    def _should_run_stream_rest_refresh(self) -> bool:
-        """Return whether a periodic REST refresh should run in streaming mode."""
-        return (
-            self._stream_bootstrap_completed
-            and time.monotonic() >= self._next_stream_rest_refresh_monotonic
-        )
-
-    def _build_stream_mappings(self, existing_mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Build mapping list from cached mappings and VINs present in stream/topic."""
-        mappings_by_vin: dict[str, dict[str, Any]] = {}
-
-        if isinstance(existing_mappings, list):
-            for item in existing_mappings:
-                if not isinstance(item, dict):
-                    continue
-                vin = item.get("vin")
-                if isinstance(vin, str) and vin:
-                    mappings_by_vin[vin] = item
-
-        stream_topic = self._entry.options.get(CONF_STREAM_TOPIC, self._entry.data.get(CONF_STREAM_TOPIC, ""))
         if isinstance(stream_topic, str):
             for segment in stream_topic.split("/"):
-                stripped = segment.strip().upper()
-                if len(stripped) == 17 and stripped.isalnum():
-                    mappings_by_vin.setdefault(stripped, {"vin": stripped, "mappingType": "PRIMARY"})
-
-        for vin in self._telematic_cache_by_vin:
-            if isinstance(vin, str) and vin:
-                mappings_by_vin.setdefault(vin, {"vin": vin, "mappingType": "PRIMARY"})
-
-        return list(mappings_by_vin.values())
+                candidate = segment.strip().upper()
+                if len(candidate) == 17 and candidate.isalnum():
+                    vins.add(candidate)
+        return [
+            {"vin": vin, "mappingType": "PRIMARY"}
+            for vin in sorted(vins)
+            if isinstance(vin, str) and vin
+        ]
 
     @staticmethod
     def _merge_telematic_by_vin(
         base: dict[str, dict[str, dict[str, Any]]],
         incoming: dict[str, dict[str, dict[str, Any]]],
     ) -> dict[str, dict[str, dict[str, Any]]]:
-        """Merge telematic entries per VIN."""
-        merged = dict(base)
+        """Merge incoming telematic entries by VIN."""
+        merged = {vin: dict(values) for vin, values in base.items()}
         for vin, telematic in incoming.items():
             if not isinstance(vin, str) or not isinstance(telematic, dict):
                 continue
-            existing = merged.get(vin, {})
-            if not isinstance(existing, dict):
-                existing = {}
-            vin_merged = dict(existing)
+            values = merged.setdefault(vin, {})
             for key, entry in telematic.items():
                 if isinstance(key, str) and isinstance(entry, dict):
-                    vin_merged[key] = entry
-            merged[vin] = vin_merged
-        return merged
-
-    def _build_payload_from_cache(self, require_existing: bool = False) -> dict[str, Any]:
-        """Return latest known payload, allowing setup to continue on throttling."""
-        if self.data and isinstance(self.data, dict):
-            return self.data
-        if require_existing:
-            raise UpdateFailed("BMW CarData API rate limited. Retry after cooldown window.")
-        return {
-            CONF_MAPPINGS: [],
-            CONF_BASIC_DATA_BY_VIN: {},
-            CONF_TELEMATIC_DATA_BY_VIN: dict(self._telematic_cache_by_vin),
-            CONF_ACTIVE_CONTAINER_ID: None,
-            CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED: self._stream_bootstrap_completed,
-        }
-
-    def _select_container_for_this_cycle(self, active_container_ids: list[str]) -> str | None:
-        """Select one active container per cycle to limit request volume."""
-        if not active_container_ids:
-            return None
-        index = self._container_rotation_index % len(active_container_ids)
-        self._container_rotation_index += 1
-        return active_container_ids[index]
-
-    @staticmethod
-    def _is_rate_limited_error(err: Exception) -> bool:
-        """Determine if an error indicates API throttling/rate limit."""
-        if isinstance(err, BmwCarDataOAuthError):
-            error_text = (err.error or "").lower()
-            description_text = (err.description or "").lower()
-            return "rate" in error_text or "limit" in error_text or "rate" in description_text
-        return "rate" in str(err).lower() and "limit" in str(err).lower()
-
-    def _select_active_container_ids(self, containers: list[dict[str, Any]]) -> list[str]:
-        """Select container ids, preferring ACTIVE ones, falling back to any valid container.
-
-        BMW's API only marks containers as ACTIVE when the vehicle has recent activity.
-        When the vehicle is parked/idle the containers may be INACTIVE or COMPLETED.
-        To avoid losing telematic data in that situation we fall back to all containers
-        that have a valid containerId when no ACTIVE containers are found.
-        """
-        _IGNORED_STATES = {"EXPIRED", "DELETED", "REVOKED"}
-
-        active_ids: list[str] = []
-        fallback_ids: list[str] = []
-        for container in containers:
-            container_id = container.get("containerId")
-            if not isinstance(container_id, str) or not container_id:
-                continue
-            state = str(container.get("state", "")).upper()
-            if state == "ACTIVE":
-                active_ids.append(container_id)
-            elif state not in _IGNORED_STATES:
-                fallback_ids.append(container_id)
-
-        if active_ids:
-            return active_ids
-
-        if fallback_ids:
-            self.logger.debug(
-                "BMW CarData: no ACTIVE containers found; falling back to %d non-active container(s) "
-                "to fetch telematic data while vehicle is idle",
-                len(fallback_ids),
-            )
-            return fallback_ids
-
-        return []
-
-    @staticmethod
-    def _merge_telematic_entries(
-        target: dict[str, dict[str, Any]],
-        source: dict[str, dict[str, Any]],
-    ) -> dict[str, dict[str, Any]]:
-        """Merge telematic entries and prefer newer timestamps for duplicate keys."""
-        merged = dict(target)
-        for key, source_entry in source.items():
-            if key not in merged:
-                merged[key] = source_entry
-                continue
-
-            existing_entry = merged[key]
-            if not isinstance(existing_entry, dict):
-                merged[key] = source_entry
-                continue
-
-            source_ts = source_entry.get("timestamp")
-            existing_ts = existing_entry.get("timestamp")
-            if isinstance(source_ts, str) and isinstance(existing_ts, str):
-                if source_ts > existing_ts:
-                    merged[key] = source_entry
-                continue
-
-            if source_entry.get("value") not in (None, ""):
-                merged[key] = source_entry
-
+                    values[key] = entry
         return merged

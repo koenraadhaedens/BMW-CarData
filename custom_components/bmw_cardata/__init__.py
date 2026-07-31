@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from functools import partial
 import logging
 import logging.handlers
 import os
@@ -12,14 +10,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import BmwCarDataApi, BmwCarDataAuthApi, BmwRemoteServicesApi
+from .api import BmwCarDataAuthApi
 from .const import (
     CONF_VERBOSE_LOGGING,
     DATA_ENTRIES,
     DEFAULT_VERBOSE_LOGGING,
     DOMAIN,
     PLATFORMS,
-    SERVICE_REFRESH_DATA,
 )
 from .coordinator import BmwCarDataCoordinator
 from .stream_manager import BmwCarDataStreamManager
@@ -81,8 +78,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     session = async_get_clientsession(hass)
     auth_api = BmwCarDataAuthApi(session)
-    cardata_api = BmwCarDataApi(session)
-    remote_api = BmwRemoteServicesApi(session)
     token_manager = BmwCarDataTokenManager(hass=hass, entry=entry, auth_api=auth_api)
     stream_manager = BmwCarDataStreamManager(
         hass,
@@ -93,26 +88,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = BmwCarDataCoordinator(
         hass,
         entry=entry,
-        api=cardata_api,
-        token_manager=token_manager,
         stream_manager=stream_manager,
     )
-    await stream_manager.async_start()
-    await coordinator.async_config_entry_first_refresh()
+    await coordinator.async_initialize()
 
     domain_data[DATA_ENTRIES][entry.entry_id] = {
         "coordinator": coordinator,
         "token_manager": token_manager,
         "stream_manager": stream_manager,
-        "remote_api": remote_api,
     }
-
-    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_DATA):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REFRESH_DATA,
-            partial(_async_handle_refresh_service, hass),
-        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -135,17 +119,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await stream_manager.async_stop()
 
     if not entries:
-        if hass.services.has_service(DOMAIN, SERVICE_REFRESH_DATA):
-            hass.services.async_remove(DOMAIN, SERVICE_REFRESH_DATA)
         hass.data.pop(DOMAIN)
     return True
-
-
-async def _async_handle_refresh_service(hass: HomeAssistant, call) -> None:
-    """Handle manual refresh service for all configured entries."""
-    domain_data = hass.data.get(DOMAIN, {})
-    entries: Mapping[str, dict] = domain_data.get(DATA_ENTRIES, {})
-    for entry_data in entries.values():
-        coordinator: BmwCarDataCoordinator | None = entry_data.get("coordinator")
-        if coordinator is not None:
-            await coordinator.async_request_refresh()

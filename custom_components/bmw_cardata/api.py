@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import base64
+from dataclasses import dataclass
 import hashlib
 import secrets
 from typing import Any
@@ -11,19 +11,12 @@ from typing import Any
 from aiohttp import ClientResponseError, ClientSession
 
 from .const import (
-    API_VERSION,
-    API_VERSION_HEADER_NAME,
-    BASIC_DATA_PATH_TEMPLATE,
-    CARDATA_BASE_URL,
-    CONTAINERS_PATH,
     DEVICE_CODE_GRANT_TYPE,
     DEVICE_CODE_PATH,
     DEVICE_CODE_RESPONSE_TYPE,
-    MAPPINGS_PATH,
     OAUTH_BASE_URL,
     PKCE_CHALLENGE_METHOD,
     REFRESH_TOKEN_GRANT_TYPE,
-    TELEMATIC_DATA_PATH_TEMPLATE,
     TOKEN_PATH,
 )
 
@@ -59,7 +52,7 @@ class DeviceCodeResponse:
 
 @dataclass(slots=True)
 class TokenResponse:
-    """Token response from OAuth endpoint."""
+    """Token response."""
 
     access_token: str
     token_type: str
@@ -79,15 +72,15 @@ class PkcePair:
 
 
 class BmwCarDataAuthApi:
-    """Small HTTP client for BMW Device Code Flow."""
+    """OAuth client used to authenticate the MQTT connection."""
 
     def __init__(self, session: ClientSession) -> None:
-        """Initialize the API wrapper."""
+        """Initialize the OAuth client."""
         self._session = session
 
     @staticmethod
     def generate_pkce_pair() -> PkcePair:
-        """Create a PKCE code_verifier and S256 code_challenge."""
+        """Create a PKCE code verifier and S256 challenge."""
         code_verifier = secrets.token_urlsafe(64)
         digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
         code_challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
@@ -101,15 +94,16 @@ class BmwCarDataAuthApi:
         code_challenge: str,
     ) -> DeviceCodeResponse:
         """Initiate the device code flow."""
-        payload = {
-            "client_id": client_id,
-            "response_type": DEVICE_CODE_RESPONSE_TYPE,
-            "scope": scope,
-            "code_challenge": code_challenge,
-            "code_challenge_method": PKCE_CHALLENGE_METHOD,
-        }
-
-        data = await self._post_form(DEVICE_CODE_PATH, payload)
+        data = await self._post_form(
+            DEVICE_CODE_PATH,
+            {
+                "client_id": client_id,
+                "response_type": DEVICE_CODE_RESPONSE_TYPE,
+                "scope": scope,
+                "code_challenge": code_challenge,
+                "code_challenge_method": PKCE_CHALLENGE_METHOD,
+            },
+        )
         return DeviceCodeResponse(
             device_code=data["device_code"],
             user_code=data["user_code"],
@@ -125,24 +119,17 @@ class BmwCarDataAuthApi:
         device_code: str,
         code_verifier: str,
     ) -> TokenResponse:
-        """Exchange authorized device code for tokens."""
-        payload = {
-            "client_id": client_id,
-            "device_code": device_code,
-            "grant_type": DEVICE_CODE_GRANT_TYPE,
-            "code_verifier": code_verifier,
-        }
-
-        data = await self._post_form(TOKEN_PATH, payload)
-        return TokenResponse(
-            access_token=data["access_token"],
-            token_type=data["token_type"],
-            expires_in=int(data.get("expires_in", 0)),
-            refresh_token=data["refresh_token"],
-            scope=data.get("scope"),
-            gcid=data.get("gcid"),
-            id_token=data.get("id_token"),
+        """Exchange an authorized device code for tokens."""
+        data = await self._post_form(
+            TOKEN_PATH,
+            {
+                "client_id": client_id,
+                "device_code": device_code,
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "code_verifier": code_verifier,
+            },
         )
+        return self._token_response(data)
 
     async def refresh_token(
         self,
@@ -150,14 +137,20 @@ class BmwCarDataAuthApi:
         client_id: str,
         refresh_token: str,
     ) -> TokenResponse:
-        """Refresh access token with refresh token."""
-        payload = {
-            "grant_type": REFRESH_TOKEN_GRANT_TYPE,
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-        }
+        """Refresh MQTT authentication tokens."""
+        data = await self._post_form(
+            TOKEN_PATH,
+            {
+                "grant_type": REFRESH_TOKEN_GRANT_TYPE,
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            },
+        )
+        return self._token_response(data)
 
-        data = await self._post_form(TOKEN_PATH, payload)
+    @staticmethod
+    def _token_response(data: dict[str, Any]) -> TokenResponse:
+        """Convert an OAuth payload to a token response."""
         return TokenResponse(
             access_token=data["access_token"],
             token_type=data["token_type"],
@@ -169,7 +162,7 @@ class BmwCarDataAuthApi:
         )
 
     async def _post_form(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Call form endpoint and map OAuth errors."""
+        """Call an OAuth form endpoint and map errors."""
         try:
             async with self._session.post(
                 f"{OAUTH_BASE_URL}{path}",
@@ -180,10 +173,15 @@ class BmwCarDataAuthApi:
                 if response.status >= 400:
                     error = data.get("error") if isinstance(data, dict) else None
                     description = (
-                        data.get("error_description") if isinstance(data, dict) else None
+                        data.get("error_description")
+                        if isinstance(data, dict)
+                        else None
                     )
                     if error:
-                        raise BmwCarDataOAuthError(error=error, description=description)
+                        raise BmwCarDataOAuthError(
+                            error=error,
+                            description=description,
+                        )
                     raise BmwCarDataApiError(
                         f"Unexpected response {response.status} from BMW OAuth endpoint"
                     )
@@ -192,264 +190,3 @@ class BmwCarDataAuthApi:
                 return data
         except ClientResponseError as err:
             raise BmwCarDataApiError("HTTP client response error") from err
-
-
-class BmwCarDataApi:
-    """HTTP client for BMW CarData business endpoints."""
-
-    def __init__(self, session: ClientSession) -> None:
-        """Initialize CarData API wrapper."""
-        self._session = session
-
-    async def get_mappings(self, access_token: str) -> list[dict[str, Any]]:
-        """Fetch mapped vehicles for current account."""
-        data = await self._get_json(MAPPINGS_PATH, access_token)
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        mappings = data.get("mappings")
-        if isinstance(mappings, list):
-            return [item for item in mappings if isinstance(item, dict)]
-        return []
-
-    async def get_basic_data(self, access_token: str, vin: str) -> dict[str, Any]:
-        """Fetch basic vehicle data for a VIN."""
-        data = await self._get_json(BASIC_DATA_PATH_TEMPLATE.format(vin=vin), access_token)
-        if isinstance(data, dict):
-            return data
-        return {}
-
-    async def get_containers(self, access_token: str) -> list[dict[str, Any]]:
-        """Fetch account containers."""
-        data = await self._get_json(CONTAINERS_PATH, access_token)
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        containers = data.get("containers")
-        if isinstance(containers, list):
-            return [item for item in containers if isinstance(item, dict)]
-        return []
-
-    async def request_fresh_container(self, access_token: str, vin: str) -> str | None:
-        """Request a fresh telematic container for a VIN.
-
-        POSTs to the containers endpoint asking BMW's backend to create a new
-        container populated with the vehicle's current state.  This is the
-        equivalent of a "wake-up / current-state" request for the CarData API.
-        Returns the new containerId on success, or None if unsupported.
-        """
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            API_VERSION_HEADER_NAME: API_VERSION,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        body = {"vin": vin}
-        try:
-            from aiohttp import ClientResponseError
-            async with self._session.post(
-                f"{CARDATA_BASE_URL}{CONTAINERS_PATH}",
-                headers=headers,
-                json=body,
-            ) as response:
-                if response.status in (200, 201):
-                    data = await response.json(content_type=None)
-                    if isinstance(data, dict):
-                        container_id = data.get("containerId") or data.get("id")
-                        if isinstance(container_id, str) and container_id:
-                            return container_id
-                # Non-success but not an exception — API may not support creation.
-                return None
-        except Exception:  # noqa: BLE001
-            return None
-
-    async def get_telematic_data(
-        self,
-        access_token: str,
-        vin: str,
-        container_id: str | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch telematic data for a VIN, optionally scoped to a container.
-
-        When container_id is omitted the BMW API is queried without the
-        containerId parameter, which typically returns the latest known vehicle
-        state and is used as a fallback when no active container is available.
-        """
-        params: dict[str, Any] = {}
-        if container_id:
-            params["containerId"] = container_id
-        data = await self._get_json(
-            TELEMATIC_DATA_PATH_TEMPLATE.format(vin=vin),
-            access_token,
-            params=params if params else None,
-        )
-        if not isinstance(data, dict):
-            return {}
-        telematic_data = data.get("telematicData")
-        # BMW API may return telematicData as a dict {path: {value, unit, ...}}
-        # or as a list [{name, value, unit, timestamp}, ...].  Handle both.
-        if isinstance(telematic_data, dict):
-            return {
-                key: value
-                for key, value in telematic_data.items()
-                if isinstance(key, str) and isinstance(value, dict)
-            }
-        if isinstance(telematic_data, list):
-            result: dict[str, dict[str, Any]] = {}
-            for item in telematic_data:
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name")
-                if not isinstance(name, str) or not name:
-                    continue
-                result[name] = {
-                    "value": item.get("value"),
-                    "unit": item.get("unit"),
-                    "timestamp": item.get("timestamp"),
-                }
-            return result
-        return {}
-
-    async def _get_json(
-        self,
-        path: str,
-        access_token: str,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | list[Any]:
-        """Perform authorized GET and return JSON payload."""
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            API_VERSION_HEADER_NAME: API_VERSION,
-            "Accept": "application/json",
-        }
-
-        try:
-            async with self._session.get(
-                f"{CARDATA_BASE_URL}{path}", headers=headers, params=params
-            ) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    error = None
-                    description = None
-                    if isinstance(data, dict):
-                        error = data.get("error") or data.get("exveErrorId")
-                        description = data.get("error_description") or data.get("exveErrorMsg")
-                    if error:
-                        raise BmwCarDataOAuthError(error=error, description=description)
-                    raise BmwCarDataApiError(
-                        f"Unexpected response {response.status} from BMW CarData endpoint"
-                    )
-                if not isinstance(data, (dict, list)):
-                    raise BmwCarDataApiError("Unexpected non-JSON object response")
-                return data
-        except ClientResponseError as err:
-            raise BmwCarDataApiError("HTTP client response error") from err
-
-
-class BmwRemoteServicesApi:
-    """HTTP client for BMW CoCoAPI remote commands (lock, climate, horn, etc.)."""
-
-    def __init__(self, session: ClientSession) -> None:
-        """Initialize remote services API wrapper."""
-        self._session = session
-
-    async def send_command(
-        self,
-        access_token: str,
-        vin: str,
-        command: str,
-    ) -> str | None:
-        """POST a remote command to the BMW CoCoAPI.
-
-        BMW's API path format has changed across versions; try multiple
-        patterns automatically so we don't break when BMW updates their API.
-        Returns the eventId on success or None.  Raises BmwCarDataApiError
-        when all candidates fail.
-        """
-        import uuid as _uuid
-
-        from .const import COCO_BASE_URL, REMOTE_X_USER_AGENT
-
-        # Normalise to both formats; BMW have used both in different API versions.
-        kebab = command.lower().replace("_", "-")
-        upper = command.upper().replace("-", "_")
-
-        candidates = [
-            f"/eadrax-vrccs/v2/presentation/remote-commands/{vin}/{kebab}",
-            f"/eadrax-vrccs/v2/presentation/remote-commands/{vin}/{upper}",
-            f"/eadrax-vrccs/v3/presentation/remote-commands/{vin}/{kebab}",
-            f"/eadrax-vrccs/v3/presentation/remote-commands/{vin}/{upper}",
-        ]
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "x-user-agent": REMOTE_X_USER_AGENT,
-            "bmw-session-id": str(_uuid.uuid4()),
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-        last_error: BmwCarDataApiError | None = None
-        for path in candidates:
-            url = f"{COCO_BASE_URL}{path}"
-            try:
-                async with self._session.post(url, headers=headers, json={}) as response:
-                    data = await response.json(content_type=None)
-                    if response.status == 404:
-                        last_error = BmwCarDataApiError(
-                            f"Remote command '{command}' not found at {path}"
-                        )
-                        continue
-                    if response.status >= 400:
-                        error_msg = None
-                        if isinstance(data, dict):
-                            error_msg = (
-                                data.get("error")
-                                or data.get("message")
-                                or data.get("title")
-                            )
-                        raise BmwCarDataApiError(
-                            f"Remote command '{command}' failed ({response.status})"
-                            + (f": {error_msg}" if error_msg else "")
-                        )
-                    if isinstance(data, dict):
-                        event_id = data.get("eventId") or data.get("event_id")
-                        _LOGGER.debug(
-                            "BMW remote command '%s' succeeded at path %s (eventId=%s)",
-                            command, path, event_id,
-                        )
-                        return event_id
-                    return None
-            except ClientResponseError as err:
-                raise BmwCarDataApiError(f"Remote command '{command}' HTTP error") from err
-
-        raise last_error or BmwCarDataApiError(
-            f"Remote command '{command}' returned 404 on all candidate paths"
-        )
-
-    async def lock_doors(self, access_token: str, vin: str) -> str | None:
-        """Lock all doors."""
-        return await self.send_command(access_token, vin, "DOOR_LOCK")
-
-    async def unlock_doors(self, access_token: str, vin: str) -> str | None:
-        """Unlock all doors."""
-        return await self.send_command(access_token, vin, "DOOR_UNLOCK")
-
-    async def start_climate(self, access_token: str, vin: str) -> str | None:
-        """Start climate pre-conditioning."""
-        return await self.send_command(access_token, vin, "CLIMATE_NOW")
-
-    async def stop_climate(self, access_token: str, vin: str) -> str | None:
-        """Stop climate pre-conditioning."""
-        return await self.send_command(access_token, vin, "CLIMATE_STOP")
-
-    async def flash_lights(self, access_token: str, vin: str) -> str | None:
-        """Flash exterior lights."""
-        return await self.send_command(access_token, vin, "LIGHT_FLASH")
-
-    async def honk_horn(self, access_token: str, vin: str) -> str | None:
-        """Sound the horn."""
-        return await self.send_command(access_token, vin, "HORN_BLOW")
-
-    async def find_vehicle(self, access_token: str, vin: str) -> str | None:
-        """Activate vehicle finder (flash + horn)."""
-        return await self.send_command(access_token, vin, "VEHICLE_FINDER")
-

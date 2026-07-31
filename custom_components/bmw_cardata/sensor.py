@@ -14,10 +14,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_ACTIVE_CONTAINER_ID,
     CONF_BASIC_DATA_BY_VIN,
     CONF_MAPPINGS,
-    CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED,
     CONF_TELEMATIC_DATA_BY_VIN,
     DATA_ENTRIES,
     DOMAIN,
@@ -209,7 +207,6 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [
         BmwCarDataMappedVehiclesSensor(coordinator=coordinator, entry=entry),
-        BmwCarDataStreamStartupBootstrapSensor(coordinator=coordinator, entry=entry),
     ]
 
     known_unique_ids: set[str] = set()
@@ -276,9 +273,6 @@ class BmwCarDataMappedVehiclesSensor(CoordinatorEntity[BmwCarDataCoordinator], S
         telematic_data_by_vin = (
             self.coordinator.data.get(CONF_TELEMATIC_DATA_BY_VIN, {}) if self.coordinator.data else {}
         )
-        active_container_id = (
-            self.coordinator.data.get(CONF_ACTIVE_CONTAINER_ID) if self.coordinator.data else None
-        )
         key_counts: dict[str, int] = {}
         sample_keys: dict[str, list[str]] = {}
         if isinstance(telematic_data_by_vin, dict):
@@ -290,51 +284,9 @@ class BmwCarDataMappedVehiclesSensor(CoordinatorEntity[BmwCarDataCoordinator], S
                 sample_keys[vin] = keys[:10]
         return {
             "vins": vins,
-            "active_container_id": active_container_id,
             "streaming_enabled": self.coordinator.use_streaming,
-            "stream_startup_bootstrap_completed": self.coordinator.data.get(
-                CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED,
-                False,
-            )
-            if self.coordinator.data
-            else False,
             "telematic_key_counts": key_counts,
             "telematic_sample_keys": sample_keys,
-        }
-
-
-class BmwCarDataStreamStartupBootstrapSensor(
-    CoordinatorEntity[BmwCarDataCoordinator], SensorEntity
-):
-    """Diagnostic sensor showing startup REST bootstrap state in streaming mode."""
-
-    _attr_icon = "mdi:database-sync-outline"
-    _attr_has_entity_name = True
-    _attr_name = "Stream Startup Bootstrap"
-    _attr_translation_key = "stream_startup_bootstrap"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, *, coordinator: BmwCarDataCoordinator, entry: ConfigEntry) -> None:
-        """Initialize sensor."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_stream_startup_bootstrap"
-
-    @property
-    def native_value(self) -> str:
-        """Return startup bootstrap state."""
-        completed = (
-            self.coordinator.data.get(CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED, False)
-            if self.coordinator.data
-            else False
-        )
-        return "completed" if bool(completed) else "pending"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return extra state attributes."""
-        return {
-            "streaming_enabled": self.coordinator.use_streaming,
-            "completed": self.native_value == "completed",
         }
 
 

@@ -11,9 +11,8 @@ Custom Home Assistant integration for BMW CarData authentication using OAuth2 De
 - Displays the **user code** and verification URL.
 - Exchanges the authorized device code for BMW tokens and stores them in the config entry.
 - Automatically refreshes expired/expiring access tokens using the refresh token.
-- Creates sensors for mapped vehicles and VIN-level basic diagnostics.
-- Creates binary sensors for VIN capabilities (telematics capable, navigation, sun roof).
-- Supports optional MQTT streaming mode for telematics updates.
+- Creates sensors, binary sensors, and device trackers from incoming MQTT telematics.
+- Uses no BMW CarData business REST endpoints and sends no remote vehicle commands.
 
 ## Install with HACS
 
@@ -27,35 +26,27 @@ Custom Home Assistant integration for BMW CarData authentication using OAuth2 De
 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **BMW CarData**.
-3. Enter your Client ID from My BMW → CarData.
+3. Enter your Client ID and MQTT stream topic from My BMW → CarData.
 4. Follow the displayed authorization instructions (user code + URL).
 5. Submit once authorized.
 
 ## Notes
 
-- This implementation includes `sensor` entities based on mappings/basic data.
-- A manual refresh service is available as `bmw_cardata.refresh_data`.
-- Battery/fuel/doors telematics entities depend on having an ACTIVE BMW container with relevant keys.
-- You must subscribe your client to `cardata:api:read` before authorizing.
+- Entities remain unknown until their values arrive through MQTT.
+- MQTT only publishes vehicle changes; there is no startup REST snapshot.
+- You must subscribe your client to `cardata:streaming:read` before authorizing.
 
-## Optional streaming mode (MQTT)
+## MQTT streaming
 
-You can enable streaming to reduce REST telematics calls and receive push updates:
+The integration is inbound MQTT-only:
 
 1. Open integration options in Home Assistant.
-2. Enable **Use MQTT streaming**.
-3. Set stream topic from BMW CarData streaming credentials.
-4. Stream host and port use BMW defaults automatically (`customer.streaming-cardata.bmwgroup.com:9000`).
-5. Keep your BMW `gcid` as MQTT username and ID token as MQTT password (handled automatically by the integration).
+2. Set the stream topic from BMW CarData streaming credentials.
+3. Stream host and port use BMW defaults automatically (`customer.streaming-cardata.bmwgroup.com:9000`).
+4. The integration uses your BMW `gcid` as MQTT username and token as MQTT password.
 
 If streaming was not enabled during initial setup, remove and re-add the integration with
 streaming enabled. BMW must issue a new token containing the
 `cardata:streaming:read` scope; changing the option alone cannot add that scope.
 
-When streaming is enabled, telematics sensors use streamed updates with an hourly REST
-refresh as a fallback. REST-only configurations also refresh hourly to stay within BMW's
-API request limit.
-
-If BMW is already rate limiting during Home Assistant startup, the integration remains
-loaded with empty startup data and retries after its local cooldown. This avoids rapid
-config-entry setup retries that would extend the throttling window.
+Existing entries authorized without `cardata:streaming:read` must be removed and re-added.
