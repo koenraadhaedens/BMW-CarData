@@ -23,6 +23,7 @@ from .const import (
     CONF_TELEMATIC_DATA_BY_VIN,
     COORDINATOR_UPDATE_INTERVAL_SECONDS,
     ERROR_EXPIRED_TOKEN,
+    RATE_LIMIT_COOLDOWN_SECONDS,
     STREAMING_REST_REFRESH_INTERVAL_SECONDS,
 )
 from .stream_manager import BmwCarDataStreamManager
@@ -61,6 +62,7 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stream_bootstrap_completed = False
         self._next_stream_bootstrap_monotonic = 0.0
         self._next_stream_rest_refresh_monotonic = 0.0
+        self._rate_limit_until_monotonic = 0.0
 
     @property
     def streaming_requested(self) -> bool:
@@ -137,6 +139,9 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     return self.data
                 return snapshot
+            if time.monotonic() < self._rate_limit_until_monotonic:
+                self.logger.debug("BMW CarData API cooldown active; reusing cached data")
+                return self._build_payload_from_cache(require_existing=True)
             access_token = await self._token_manager.async_get_access_token()
             return await self._async_fetch_snapshot(access_token)
         except BmwCarDataOAuthError as err:
@@ -146,15 +151,20 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return await self._async_fetch_snapshot(access_token)
                 except (BmwCarDataApiError, BmwCarDataOAuthError) as retry_err:
                     if self._is_rate_limited_error(retry_err):
-                        self.logger.warning("BMW CarData API rate limited during retry; reusing cached data")
+                        self._start_rate_limit_cooldown()
+                        self.logger.warning(
+                            "BMW CarData API rate limited during retry; reusing cached data"
+                        )
                         return self._build_payload_from_cache(require_existing=True)
                     raise UpdateFailed(str(retry_err)) from retry_err
             if self._is_rate_limited_error(err):
+                self._start_rate_limit_cooldown()
                 self.logger.warning("BMW CarData API rate limited; reusing cached data")
                 return self._build_payload_from_cache(require_existing=True)
             raise UpdateFailed(str(err)) from err
         except BmwCarDataApiError as err:
             if self._is_rate_limited_error(err):
+                self._start_rate_limit_cooldown()
                 self.logger.warning("BMW CarData API rate limited; reusing cached data")
                 return self._build_payload_from_cache(require_existing=True)
             raise UpdateFailed(str(err)) from err
@@ -417,6 +427,7 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._telematic_cache_by_vin = telematic_data_by_vin
         if rate_limited_on_telematic:
+            self._start_rate_limit_cooldown()
             self.logger.warning(
                 "BMW CarData API rate limited during telematic fetch; keeping cached telematics"
             )
@@ -428,6 +439,12 @@ class BmwCarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_ACTIVE_CONTAINER_ID: active_container_id,
             CONF_STREAM_STARTUP_BOOTSTRAP_COMPLETED: self._stream_bootstrap_completed,
         }
+
+    def _start_rate_limit_cooldown(self) -> None:
+        """Delay further REST calls after BMW reports throttling."""
+        self._rate_limit_until_monotonic = (
+            time.monotonic() + RATE_LIMIT_COOLDOWN_SECONDS
+        )
 
     def _should_run_stream_bootstrap(self) -> bool:
         """Return whether startup REST bootstrap should run in streaming mode."""

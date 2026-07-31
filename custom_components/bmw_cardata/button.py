@@ -34,31 +34,31 @@ BMW_BUTTONS: tuple[BmwButtonDescription, ...] = (
         key="climate_start",
         name="Climate Start",
         icon="mdi:air-conditioner",
-        command="climate-now",
+        command="CLIMATE_NOW",
     ),
     BmwButtonDescription(
         key="climate_stop",
         name="Climate Stop",
         icon="mdi:air-conditioner-off",
-        command="climate-stop",
+        command="CLIMATE_STOP",
     ),
     BmwButtonDescription(
         key="flash_lights",
         name="Flash Lights",
         icon="mdi:car-light-high",
-        command="light-flash",
+        command="LIGHT_FLASH",
     ),
     BmwButtonDescription(
         key="honk_horn",
         name="Honk Horn",
         icon="mdi:bugle",
-        command="horn-blow",
+        command="HORN_BLOW",
     ),
     BmwButtonDescription(
         key="find_vehicle",
         name="Find Vehicle",
         icon="mdi:car-search",
-        command="vehicle-finder",
+        command="VEHICLE_FINDER",
     ),
 )
 

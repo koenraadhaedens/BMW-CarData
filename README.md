@@ -48,4 +48,10 @@ You can enable streaming to reduce REST telematics calls and receive push update
 4. Stream host and port use BMW defaults automatically (`customer.streaming-cardata.bmwgroup.com:9000`).
 5. Keep your BMW `gcid` as MQTT username and ID token as MQTT password (handled automatically by the integration).
 
-When streaming is enabled, telematics sensors use streamed updates while basic vehicle data remains polled.
+If streaming was not enabled during initial setup, remove and re-add the integration with
+streaming enabled. BMW must issue a new token containing the
+`cardata:streaming:read` scope; changing the option alone cannot add that scope.
+
+When streaming is enabled, telematics sensors use streamed updates with an hourly REST
+refresh as a fallback. REST-only configurations also refresh hourly to stay within BMW's
+API request limit.
